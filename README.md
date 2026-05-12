@@ -80,7 +80,7 @@ Apple Metal has efficient matmul kernels but limited memory bandwidth. Our hybri
 ## References
 
 - [karpathy/microgpt](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) - Base implementation
-- [SubQ](https://subq.ai/introducing-subq) - Sparse attention via learned routing
+- [SubQ](https://subq.ai) - Sparse attention via learned routing
 - [FlashAttention](https://arxiv.org/abs/2205.14135) - IO-aware exact attention
 - [Longformer](https://arxiv.org/abs/2004.05150) - Local + global attention pattern
 
