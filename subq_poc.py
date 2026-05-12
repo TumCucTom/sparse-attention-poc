@@ -1,12 +1,13 @@
 """
-SubQ-inspired Sparse Attention using PyTorch
+SubQ-style Sparse Attention using PyTorch
 
-Implements the key SubQ principles:
-1. Learned routing function that assigns tokens to buckets based on content
-2. Sparse attention - only attend within same bucket
-3. Subquadratic complexity O(n*k) where k = avg bucket size
+Implements SubQ's key principles:
+1. Each attention head has a learnable router
+2. Router selects top-k tokens to attend to (content-dependent selection)
+3. Attention computed only on selected subset with proper causal masking
+4. Complexity O(k² + T) where k << T
 
-Based on principles from subq.ai
+Based on MoSA (Mixture of Sparse Attention) using Expert-Choice Routing.
 
 Extension of karpathy/microgpt: https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95
 """
@@ -19,110 +20,121 @@ import random
 torch.manual_seed(42)
 
 
-class SubQAttention(nn.Module):
+class SubQRouter(nn.Module):
     """
-    SubQ-style sparse attention with learned routing.
-
-    Instead of O(n²) attention over all tokens:
-    1. Route each token to buckets based on key content via learned router
-    2. Each query attends only to tokens in same bucket(s)
-
-    Complexity: O(n) to route + O(n*k) attention where k = avg bucket size
+    Learnable router that scores each token for attention selection.
+    Each head has its own router weights - selects top-k tokens to attend to.
     """
-    def __init__(self, n_heads: int, head_dim: int, n_bins: int = 16, temperature: float = 1.0):
+    def __init__(self, dim: int, n_heads: int, top_k: int = 32):
         super().__init__()
         self.n_heads = n_heads
-        self.head_dim = head_dim
-        self.n_bins = n_bins
-        self.temperature = temperature
+        self.top_k = top_k
+        self.router = nn.Linear(dim, n_heads, bias=False)
 
-        # Learned router: projects key representation to bucket logits
-        key_dim = n_heads * head_dim
-        self.router = nn.Sequential(
-            nn.Linear(key_dim, 128),
-            nn.Tanh(),
-            nn.Linear(128, n_bins)
-        )
-
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor):
         """
-        q, k, v: [batch, n_heads, T, head_dim]
-        Returns: [batch, n_heads, T, head_dim]
+        x: [batch, T, dim]
+        returns: top_k indices [batch, n_heads, top_k]
         """
-        batch_size, n_heads, T, head_dim = q.shape
+        batch_size, T, dim = x.shape
 
-        # Route keys to buckets using learned router
-        k_flat = k.transpose(1, 2).reshape(batch_size, T, -1)  # [batch, T, n_heads*head_dim]
-        bucket_logits = self.router(k_flat)  # [batch, T, n_bins]
+        # Router projects to per-head scores: [batch, T, n_heads]
+        router_scores = self.router(x)
 
-        # Soft assignment: probability distribution over buckets
-        bucket_probs = F.softmax(bucket_logits / self.temperature, dim=-1)  # [batch, T, n_bins]
+        # Permute to [batch, n_heads, T] for top-k selection per head
+        router_scores = router_scores.permute(0, 2, 1)
 
-        # Compute bucket assignment similarity for each pair of tokens
-        # If two tokens route to similar buckets, they attend to each other
-        # [batch, T, n_bins] @ [batch, n_bins, T] -> [batch, T, T]
-        bucket_sim = torch.bmm(bucket_probs, bucket_probs.transpose(1, 2))
+        # Handle case where T < top_k
+        actual_k = min(self.top_k, T)
+        topk_scores, topk_indices = router_scores.topk(actual_k, dim=-1)
 
-        # Threshold: if bucket similarity is above this, tokens can attend
-        threshold = 0.05
-        bucket_mask = bucket_sim > threshold
-
-        # Causal mask
-        causal = torch.tril(torch.ones(T, T, device=q.device, dtype=torch.bool))
-
-        # Combined mask: causal AND similar bucket assignment
-        mask = causal & bucket_mask
-
-        scale = head_dim ** -0.5
-        out = torch.zeros_like(q)
-
-        # Vectorized attention with mask
-        for b in range(batch_size):
-            for h in range(n_heads):
-                q_h = q[b, h]  # [T, head_dim]
-                k_h = k[b, h]
-                v_h = v[b, h]
-
-                # Attention scores
-                scores = torch.matmul(q_h, k_h.T) * scale
-                scores = scores.masked_fill(~mask[b], float('-inf'))
-
-                attn = F.softmax(scores, dim=-1)
-                out[b, h] = torch.matmul(attn, v_h)
-
-        return out
+        return topk_indices, topk_scores
 
 
-class MultiHeadSubQAttention(nn.Module):
-    def __init__(self, dim: int, n_heads: int, head_dim: int, n_bins: int = 16, temperature: float = 1.0):
+class SubQAttention(nn.Module):
+    """
+    SubQ-style sparse attention using top-k token selection.
+
+    Key insight: each head selects which tokens to attend to based on learned routing.
+    Attention is computed only on the selected subset.
+
+    The causal mask must respect ORIGINAL token positions, not subset positions.
+    """
+    def __init__(self, dim: int, n_heads: int, head_dim: int, top_k: int = 32):
         super().__init__()
         self.dim = dim
         self.n_heads = n_heads
         self.head_dim = head_dim
+        self.top_k = top_k
 
         self.q_proj = nn.Linear(dim, dim, bias=False)
         self.k_proj = nn.Linear(dim, dim, bias=False)
         self.v_proj = nn.Linear(dim, dim, bias=False)
         self.o_proj = nn.Linear(dim, dim, bias=False)
 
-        self.attn = SubQAttention(n_heads, head_dim, n_bins=n_bins, temperature=temperature)
+        self.router = SubQRouter(dim, n_heads, top_k)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [batch, T, dim]
+        returns: [batch, T, dim]
+        """
         batch_size, T, dim = x.shape
 
+        # Get selected indices per head
+        topk_indices, _ = self.router(x)
+        # topk_indices: [batch, n_heads, actual_k]
+
+        # Project Q, K, V
         q = self.q_proj(x).view(batch_size, T, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(batch_size, T, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch_size, T, self.n_heads, self.head_dim).transpose(1, 2)
 
-        out = self.attn(q, k, v)
+        # Process each head
+        out = torch.zeros_like(q)
+
+        for b in range(batch_size):
+            for h in range(self.n_heads):
+                # Get selected token indices for this head: [actual_k]
+                idxs = topk_indices[b, h]  # original positions
+                actual_k = idxs.size(0)
+
+                # Get Q,K,V for selected positions
+                q_h = q[b, h, idxs]  # [actual_k, head_dim]
+                k_h = k[b, h, idxs]
+                v_h = v[b, h, idxs]
+
+                # Compute attention scores
+                scale = self.head_dim ** -0.5
+                scores = torch.matmul(q_h, k_h.transpose(-2, -1)) * scale
+
+                # Build causal mask based on ORIGINAL positions
+                # token i can attend to token j if original_position_i >= original_position_j
+                # We need to check which pairs satisfy this
+                # Create matrix of original indices for selected positions
+                orig_idx = idxs.unsqueeze(1)  # [actual_k, 1]
+                orig_idx_t = idxs.unsqueeze(0)  # [1, actual_k]
+                can_attend = orig_idx >= orig_idx_t  # [actual_k, actual_k]
+
+                scores = scores.masked_fill(~can_attend, float('-inf'))
+
+                # Softmax
+                attn = F.softmax(scores, dim=-1)
+
+                # Compute output
+                out_h = torch.matmul(attn, v_h)
+
+                # Place output back at selected positions
+                out[b, h, idxs] = out_h
+
         out = out.transpose(1, 2).contiguous().view(batch_size, T, dim)
         return self.o_proj(out)
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, dim: int, n_heads: int, head_dim: int, n_bins: int = 16, temperature: float = 1.0):
+    def __init__(self, dim: int, n_heads: int, head_dim: int, top_k: int = 32):
         super().__init__()
-        self.attn = MultiHeadSubQAttention(dim, n_heads, head_dim, n_bins, temperature)
+        self.attn = SubQAttention(dim, n_heads, head_dim, top_k)
         self.norm1 = nn.RMSNorm(dim)
         self.norm2 = nn.RMSNorm(dim)
 
@@ -140,8 +152,7 @@ class TransformerBlock(nn.Module):
 
 class GPT(nn.Module):
     def __init__(self, vocab_size: int, block_size: int, n_layers: int = 4,
-                 dim: int = 256, n_heads: int = 4, head_dim: int = 64,
-                 n_bins: int = 16, temperature: float = 1.0):
+                 dim: int = 256, n_heads: int = 4, head_dim: int = 64, top_k: int = 32):
         super().__init__()
         self.vocab_size = vocab_size
         self.block_size = block_size
@@ -151,7 +162,7 @@ class GPT(nn.Module):
         self.pos_emb = nn.Embedding(block_size, dim)
 
         self.blocks = nn.ModuleList([
-            TransformerBlock(dim, n_heads, head_dim, n_bins, temperature)
+            TransformerBlock(dim, n_heads, head_dim, top_k)
             for _ in range(n_layers)
         ])
 
@@ -215,9 +226,9 @@ Alexander Andrew Christopher James Matthew Robert William David Michael Joseph D
 
 
 def train_model():
-    print("=== SubQ-Inspired Sparse Attention (PyTorch) ===")
-    print("Learned content-based routing to buckets via learned router")
-    print("O(n*k) complexity where k = avg bucket size << n")
+    print("=== SubQ-Style Sparse Attention (PyTorch) ===")
+    print("Top-k token selection per head via learned router")
+    print("O(k² + T) complexity where k = top_k << T")
     print()
 
     enc = Tokenizer(TRAINING_TEXT)
@@ -230,6 +241,7 @@ def train_model():
 
     device = 'cpu'
 
+    top_k = 32
     model = GPT(
         vocab_size=enc.vocab_size,
         block_size=block_size,
@@ -237,14 +249,14 @@ def train_model():
         dim=256,
         n_heads=4,
         head_dim=64,
-        n_bins=16,
-        temperature=1.0
+        top_k=top_k
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
-    router_params = sum(p.numel() for p in model.blocks[0].attn.attn.router.parameters())
+    router_params = sum(p.numel() for p in model.blocks[0].attn.router.parameters())
     print(f"Model params: {total_params:,}")
     print(f"Router params per layer: {router_params:,}")
+    print(f"Top-k per head: {top_k}")
     print()
 
     seq_tensor = torch.tensor(seq, dtype=torch.long, device=device)
@@ -294,7 +306,7 @@ def train_model():
         print(f"  '{prompt}' -> '{result}'")
 
     print()
-    print("Note: This implements SubQ-style learned routing. Real SubQ has more sophisticated routing.")
+    print("Note: This implements SubQ-style top-k routing. Real SubQ has more sophisticated routing.")
 
 
 if __name__ == "__main__":
