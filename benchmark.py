@@ -226,6 +226,63 @@ class HybridAttention(nn.Module):
         return self.o_proj(out.transpose(1, 2).reshape(B, T, D))
 
 
+# === 7. SubQ-Style Top-K Routing Attention ===
+class SubQTopKAttention(nn.Module):
+    """SubQ-style sparse attention via learned top-k token selection per head."""
+    def __init__(self, dim, n_heads, head_dim, top_k=32):
+        super().__init__()
+        self.dim = dim
+        self.n_heads = n_heads
+        self.head_dim = head_dim
+        self.top_k = top_k
+
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+        self.o_proj = nn.Linear(dim, dim, bias=False)
+
+        # Router selects top-k tokens per head
+        self.router = nn.Linear(dim, n_heads, bias=False)
+
+    def forward(self, x):
+        B, T, D = x.shape
+        h, hd, k = self.n_heads, self.head_dim, self.top_k
+
+        # Get router scores and select top-k per head
+        router_scores = self.router(x).permute(0, 2, 1)  # [B, n_heads, T]
+        actual_k = min(k, T)
+        _, topk_idx = router_scores.topk(actual_k, dim=-1)  # [B, n_heads, actual_k]
+
+        # Project Q, K, V
+        q = self.q_proj(x).view(B, T, h, hd).transpose(1, 2)
+        k_seq = self.k_proj(x).view(B, T, h, hd).transpose(1, 2)
+        v_seq = self.v_proj(x).view(B, T, h, hd).transpose(1, 2)
+
+        scale = hd ** -0.5
+        out = torch.zeros_like(q)
+
+        for b in range(B):
+            for head in range(h):
+                idxs = topk_idx[b, head]  # original positions
+
+                q_h = q[b, head, idxs]
+                k_h = k_seq[b, head, idxs]
+                v_h = v_seq[b, head, idxs]
+
+                # Causal mask based on original positions
+                orig_idx = idxs.unsqueeze(1)
+                orig_idx_t = idxs.unsqueeze(0)
+                causal = orig_idx >= orig_idx_t
+
+                scores = torch.matmul(q_h, k_h.transpose(-2, -1)) * scale
+                scores = scores.masked_fill(~causal, float('-inf'))
+
+                attn = F.softmax(scores, dim=-1)
+                out[b, head, idxs] = torch.matmul(attn, v_h)
+
+        return self.o_proj(out.transpose(1, 2).reshape(B, T, D))
+
+
 # === Transformer Block ===
 class TransformerBlock(nn.Module):
     def __init__(self, attn_type, dim, n_heads, head_dim, **kwargs):
@@ -244,6 +301,8 @@ class TransformerBlock(nn.Module):
             attn = HybridAttention(dim, n_heads, head_dim,
                                    kwargs.get('window_size', 128),
                                    kwargs.get('global_size', 64))
+        elif attn_type == 'subq':
+            attn = SubQTopKAttention(dim, n_heads, head_dim, kwargs.get('top_k', 32))
         else:  # sparse
             attn = SparseBucketAttention(dim, n_heads, head_dim, kwargs.get('n_bins', 16))
 
@@ -329,8 +388,7 @@ def main():
         'Local (window)': GPT(vocab_size, max_seq, 'local', n_layers, dim, n_heads, head_dim, window_size=128),
         'Hybrid (w=128,g=64)': GPT(vocab_size, max_seq, 'hybrid', n_layers, dim, n_heads, head_dim,
                                   window_size=128, global_size=64),
-        'Hybrid (w=64,g=128)': GPT(vocab_size, max_seq, 'hybrid', n_layers, dim, n_heads, head_dim,
-                                  window_size=64, global_size=128),
+        'SubQ (top-k=32)': GPT(vocab_size, max_seq, 'subq', n_layers, dim, n_heads, head_dim, top_k=32),
     }
 
     for name, model in models.items():
@@ -346,8 +404,8 @@ def main():
     print()
 
     # Benchmark
-    print(f"{'Seq Len':>10} {'SDPA':>12} {'MemEff':>12} {'Standard':>12} {'Local':>12} {'Hybrid-1':>12} {'Hybrid-2':>12} {'Best':>15}")
-    print("-" * 110)
+    print(f"{'Seq Len':>10} {'SDPA':>12} {'MemEff':>12} {'Standard':>12} {'Local':>12} {'Hybrid':>12} {'SubQ':>12} {'Best':>15}")
+    print("-" * 105)
 
     results = {}
     seq_lengths = [256, 512, 1024, 2048, 4096]
@@ -365,7 +423,7 @@ def main():
 
         print(f"{T:>10} {times['SDPA (FlashAttn)']*1000:>11.1f}ms {times['MemEff (chunked)']*1000:>11.1f}ms "
               f"{times['Standard (naive)']*1000:>11.1f}ms {times['Local (window)']*1000:>11.1f}ms "
-              f"{times['Hybrid (w=128,g=64)']*1000:>11.1f}ms {times['Hybrid (w=64,g=128)']*1000:>11.1f}ms {best_name:>15}")
+              f"{times['Hybrid (w=128,g=64)']*1000:>11.1f}ms {times['SubQ (top-k=32)']*1000:>11.1f}ms {best_name:>15}")
 
         results[T] = times
 
