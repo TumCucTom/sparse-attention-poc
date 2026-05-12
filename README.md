@@ -22,7 +22,7 @@ This gives O(T × w) complexity where w (window) is constant, vs O(T × cs) for 
 
 ## Benchmarks
 
-**Device**: Apple M2 Max MPS (PyTorch 2.8.0)  
+**Device**: Apple M5 Mac MPS (PyTorch 2.8.0)  
 **Config**: dim=256, heads=4, head_dim=64, layers=2
 
 ```
@@ -80,7 +80,7 @@ Apple Metal has efficient matmul kernels but limited memory bandwidth. Our hybri
 ## References
 
 - [karpathy/microgpt](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) - Base implementation
-- [SubQ (Subquadratic)](https://arxiv.org/abs/2310.06824) - Sparse attention via learned routing
+- [SubQ](https://subq.ai/introducing-subq) - Sparse attention via learned routing
 - [FlashAttention](https://arxiv.org/abs/2205.14135) - IO-aware exact attention
 - [Longformer](https://arxiv.org/abs/2004.05150) - Local + global attention pattern
 
