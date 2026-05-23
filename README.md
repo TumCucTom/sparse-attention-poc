@@ -1,24 +1,28 @@
-# Sparse Attention POC: Beating Chunked Attention with Hybrid Local + Global
+# Sparse Attention POC
 
 ## What is this?
 
-A proof-of-concept exploring sparse attention patterns that beat the standard chunked/memory-efficient attention approach on Apple Silicon (MPS).
+A proof-of-concept exploring sparse attention for LLMs, with two tracks:
 
-Based on principles from SubQ (subquadratic attention), content-based routing, and sliding window attention patterns.
+1. **Practical runtime track**
+   Fixed hybrid local+global attention that is fast enough to benchmark locally on Apple Silicon.
+
+2. **Research track**
+   Learned sparse routing inspired by SubQ / SSA, including dense-teacher distillation and sparse fine-tuning experiments.
 
 ## The Problem
 
 Standard attention is O(T²) in sequence length. Even with chunked/memory-efficient approaches that limit context, we saw:
 - **4096 tokens on MPS**: MemEff (chunked) = 104ms, Standard = 142ms
 
-## Our Solution: Hybrid Local + Global Attention
+## Current Best Local Runtime
 
-Instead of processing all tokens or just chunking, we combine:
+The most practical local runtime in this repo today is fixed hybrid attention:
 
 1. **Local sliding window** (128 tokens) - captures nearby context efficiently
 2. **Global prefix attention** (64 tokens) - cheap attention to first N tokens as a "summary"
 
-This gives O(T × w) complexity where w (window) is constant, vs O(T × cs) for chunked.
+This is currently the strongest path for local speed experiments.
 
 ## Benchmarks
 
@@ -54,8 +58,15 @@ Seq Len         SDPA       MemEff     Standard        Local     Hybrid-1        
 
 ## Files
 
-- `benchmark.py` - Main benchmark comparing all attention methods
-- `subq_poc.py` - SubQ-inspired sparse attention with content-based routing (training POC)
+- `benchmark.py` - Synthetic attention benchmark
+- `benchmark_hybrid_qwen.py` - Safe local benchmark for dense vs fixed hybrid attention on Qwen
+- `benchmark_subq.py` - Corrected sparse runtime benchmark variants on Qwen
+- `benchmark_retrieval_qwen.py` - Small synthetic long-context retrieval benchmark
+- `subq_runtime.py` - Shared HF-compatible sparse/hybrid runtimes
+- `train_subq_hybrid.py` - Dense-teacher -> sparse fine-tune training experiments
+- `subq_poc.py` - Original SubQ-inspired POC
+- `docs/subq_ssa_reproduction_plan.md` - Gap-to-SSA reproduction plan
+- `docs/LOCAL_SAFE_USAGE.md` - Safe local usage guidance
 
 ## Why This Works on MPS
 
@@ -64,18 +75,22 @@ Apple Metal has efficient matmul kernels but limited memory bandwidth. Our hybri
 - Avoids the Python loop overhead that kills performance on CUDA
 - Window size stays constant regardless of sequence length
 
+## Current Status
+
+- We have a **credible sparse-attention POC**.
+- We do **not** yet have a full reproduction of SubQ / SSA’s learned sub-quadratic claims.
+- The best **runtime** path locally is fixed hybrid local+global attention.
+- The best **training** path locally is dense-teacher supervised sparse routing.
+
 ## Limitations & Next Steps
 
-1. **Python loops** - Current implementation uses Python loops. On NVIDIA GPU this would be slow. Needs CUDA kernels (Triton/cuBLAS) for real deployment.
+1. **Runtime kernels** - The learned sparse routing variants are still too gather-heavy to be the best runtime path on MPS.
 
-2. **Optimal window sizes** - 128/64 chosen heuristically. Other ratios may work better.
+2. **Long-context proof** - We do not yet have credible 128K+ scaling evidence locally.
 
-3. **Quality validation** - Need perplexity benchmarks to ensure quality doesn't degrade.
+3. **Retrieval quality** - We still need stronger long-context retrieval evaluation.
 
-4. **Llama 7B integration** - Would need:
-   - Replace HuggingFace attention with hybrid attention
-   - CUDA kernels for the attention pattern
-   - ~16GB VRAM for 7B in fp16
+4. **Scaled training** - The training recipe needs larger models, longer contexts, and likely HPC resources to move beyond toy LM scale.
 
 ## References
 
@@ -90,4 +105,8 @@ Apple Metal has efficient matmul kernels but limited memory bandwidth. Our hybri
 python3 benchmark.py
 ```
 
-Output shows timing for each attention method across sequence lengths 256-4096.
+For safe local HF runs, see:
+
+```bash
+cat docs/LOCAL_SAFE_USAGE.md
+```

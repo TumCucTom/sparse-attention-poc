@@ -15,6 +15,12 @@ import torch.nn.functional as F
 torch.manual_seed(42)
 
 
+def causal_mask_from_positions(query_positions, key_positions, device):
+    q = torch.as_tensor(query_positions, device=device).view(-1, 1)
+    k = torch.as_tensor(key_positions, device=device).view(1, -1)
+    return k <= q
+
+
 # === 1. SDPA (FlashAttention) ===
 class SDPAAttention(nn.Module):
     """PyTorch's scaled_dot_product_attention - uses Metal kernels on MPS."""
@@ -66,6 +72,12 @@ class MemEffAttention(nn.Module):
             end = min(start + cs, T)
             q_chunk = q[:, start:end, :]
             attn_chunk = torch.matmul(q_chunk, k.transpose(-2, -1)) * scale
+            mask = causal_mask_from_positions(
+                torch.arange(start, end, device=x.device),
+                torch.arange(0, T, device=x.device),
+                x.device,
+            )
+            attn_chunk = attn_chunk.masked_fill(~mask.unsqueeze(0), float("-inf"))
             attn_chunk = F.softmax(attn_chunk, dim=-1)
             out[:, start:end, :] = torch.matmul(attn_chunk, v)
 
@@ -93,6 +105,8 @@ class StandardAttention(nn.Module):
         v = self.v_proj(x).view(B, T, h, hd).transpose(1, 2)
 
         attn = torch.matmul(q, k.transpose(-2, -1)) / (hd ** 0.5)
+        causal = torch.tril(torch.ones(T, T, device=x.device, dtype=torch.bool))
+        attn = attn.masked_fill(~causal.view(1, 1, T, T), float("-inf"))
         attn = F.softmax(attn, dim=-1)
         out = torch.matmul(attn, v)
         return self.o_proj(out.transpose(1, 2).reshape(B, T, D))
@@ -125,11 +139,18 @@ class LocalWindowAttention(nn.Module):
 
         for start in range(0, T, w):
             end = min(start + w, T)
+            local_start = max(0, start - w + 1)
             q_win = q[:, :, start:end, :]
-            k_win = k[:, :, :end, :]
-            v_win = v[:, :, :end, :]
+            k_win = k[:, :, local_start:end, :]
+            v_win = v[:, :, local_start:end, :]
 
             attn = torch.matmul(q_win, k_win.transpose(-2, -1)) * scale
+            mask = causal_mask_from_positions(
+                torch.arange(start, end, device=x.device),
+                torch.arange(local_start, end, device=x.device),
+                x.device,
+            )
+            attn = attn.masked_fill(~mask.view(1, 1, end - start, end - local_start), float("-inf"))
             attn = F.softmax(attn, dim=-1)
             out[:, :, start:end, :] = torch.matmul(attn, v_win)
 
@@ -170,6 +191,12 @@ class StridedAttention(nn.Module):
             v_full = v[:, :, :end, :]
 
             attn = torch.matmul(q_slice, k_full.transpose(-2, -1)) * scale
+            mask = causal_mask_from_positions(
+                torch.arange(idx, end, device=x.device),
+                torch.arange(0, end, device=x.device),
+                x.device,
+            )
+            attn = attn.masked_fill(~mask.view(1, 1, end - idx, end), float("-inf"))
             attn = F.softmax(attn, dim=-1)
             out[:, :, idx:end, :] = torch.matmul(attn, v_full)
 
@@ -208,8 +235,9 @@ class HybridAttention(nn.Module):
             q_win = q[:, :, start:end, :]
 
             # Local keys in window
-            k_local = k[:, :, start:end, :]
-            v_local = v[:, :, start:end, :]
+            local_start = max(0, start - w + 1)
+            k_local = k[:, :, local_start:end, :]
+            v_local = v[:, :, local_start:end, :]
 
             # Global keys (prefix)
             k_glob = k[:, :, :g, :]
@@ -220,7 +248,82 @@ class HybridAttention(nn.Module):
             v_comb = torch.cat([v_glob, v_local], dim=2)
 
             attn = torch.matmul(q_win, k_comb.transpose(-2, -1)) * scale
+            q_pos = torch.arange(start, end, device=x.device).view(-1, 1)
+            g_pos = torch.arange(0, g, device=x.device).view(1, -1)
+            l_pos = torch.arange(local_start, end, device=x.device).view(1, -1)
+            g_mask = g_pos <= q_pos
+            l_mask = l_pos <= q_pos
+            mask = torch.cat([g_mask, l_mask], dim=1)
+            attn = attn.masked_fill(~mask.view(1, 1, end - start, g + end - local_start), float("-inf"))
             attn = F.softmax(attn, dim=-1)
+            out[:, :, start:end, :] = torch.matmul(attn, v_comb)
+
+        return self.o_proj(out.transpose(1, 2).reshape(B, T, D))
+
+
+class LocalGlobalLearnedAttention(nn.Module):
+    """
+    Local window plus a small learned set of global tokens shared per head.
+
+    This is closer to a deployable sparse runtime than arbitrary per-query top-k:
+    - every query sees a fixed local window
+    - every head also sees a small learned global token pool
+    """
+    def __init__(self, dim, n_heads, head_dim, window_size=128, global_k=32, chunk_size=64):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = head_dim
+        self.window_size = window_size
+        self.global_k = global_k
+        self.chunk_size = chunk_size
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+        self.o_proj = nn.Linear(dim, dim, bias=False)
+        self.router = nn.Linear(dim, n_heads, bias=False)
+
+    def forward(self, x):
+        B, T, D = x.shape
+        h, hd = self.n_heads, self.head_dim
+        w = min(self.window_size, T)
+        g = min(self.global_k, T)
+        cs = min(self.chunk_size, T)
+
+        q = self.q_proj(x).view(B, T, h, hd).transpose(1, 2)
+        k = self.k_proj(x).view(B, T, h, hd).transpose(1, 2)
+        v = self.v_proj(x).view(B, T, h, hd).transpose(1, 2)
+
+        router_scores = self.router(x).permute(0, 2, 1)
+        global_idx = router_scores.topk(g, dim=-1).indices.sort(dim=-1).values
+        gather_idx = global_idx.unsqueeze(-1).expand(-1, -1, -1, hd)
+        k_global = torch.gather(k, 2, gather_idx)
+        v_global = torch.gather(v, 2, gather_idx)
+
+        scale = hd ** -0.5
+        out = torch.zeros_like(q)
+
+        for start in range(0, T, cs):
+            end = min(start + cs, T)
+            local_start = max(0, start - w + 1)
+            q_chunk = q[:, :, start:end, :]
+            k_local = k[:, :, local_start:end, :]
+            v_local = v[:, :, local_start:end, :]
+
+            k_comb = torch.cat([k_global, k_local], dim=2)
+            v_comb = torch.cat([v_global, v_local], dim=2)
+
+            scores = torch.matmul(q_chunk, k_comb.transpose(-2, -1)) * scale
+
+            q_pos = torch.arange(start, end, device=x.device).view(1, 1, end - start, 1)
+            g_pos = global_idx.unsqueeze(2).expand(-1, -1, end - start, -1)
+            l_pos = torch.arange(local_start, end, device=x.device).view(1, 1, 1, end - local_start)
+
+            g_valid = g_pos <= q_pos
+            l_valid = (l_pos <= q_pos) & (l_pos >= (q_pos - w + 1))
+            valid = torch.cat([g_valid, l_valid.expand(B, h, -1, -1)], dim=-1)
+
+            scores = scores.masked_fill(~valid, float('-inf'))
+            attn = F.softmax(scores, dim=-1)
             out[:, :, start:end, :] = torch.matmul(attn, v_comb)
 
         return self.o_proj(out.transpose(1, 2).reshape(B, T, D))
@@ -301,6 +404,15 @@ class TransformerBlock(nn.Module):
             attn = HybridAttention(dim, n_heads, head_dim,
                                    kwargs.get('window_size', 128),
                                    kwargs.get('global_size', 64))
+        elif attn_type == 'local_global_learned':
+            attn = LocalGlobalLearnedAttention(
+                dim,
+                n_heads,
+                head_dim,
+                kwargs.get('window_size', 128),
+                kwargs.get('global_k', 32),
+                kwargs.get('chunk_size', 64),
+            )
         elif attn_type == 'subq':
             attn = SubQTopKAttention(dim, n_heads, head_dim, kwargs.get('top_k', 32))
         else:  # sparse
@@ -388,6 +500,10 @@ def main():
         'Local (window)': GPT(vocab_size, max_seq, 'local', n_layers, dim, n_heads, head_dim, window_size=128),
         'Hybrid (w=128,g=64)': GPT(vocab_size, max_seq, 'hybrid', n_layers, dim, n_heads, head_dim,
                                   window_size=128, global_size=64),
+        'Local+LearnedG (w=128,g=32)': GPT(
+            vocab_size, max_seq, 'local_global_learned', n_layers, dim, n_heads, head_dim,
+            window_size=128, global_k=32, chunk_size=64
+        ),
         'SubQ (top-k=32)': GPT(vocab_size, max_seq, 'subq', n_layers, dim, n_heads, head_dim, top_k=32),
     }
 
@@ -404,8 +520,8 @@ def main():
     print()
 
     # Benchmark
-    print(f"{'Seq Len':>10} {'SDPA':>12} {'MemEff':>12} {'Standard':>12} {'Local':>12} {'Hybrid':>12} {'SubQ':>12} {'Best':>15}")
-    print("-" * 105)
+    print(f"{'Seq Len':>10} {'SDPA':>12} {'MemEff':>12} {'Standard':>12} {'Local':>12} {'Hybrid':>12} {'L+LG':>12} {'SubQ':>12} {'Best':>15}")
+    print("-" * 118)
 
     results = {}
     seq_lengths = [256, 512, 1024, 2048, 4096]
@@ -423,7 +539,8 @@ def main():
 
         print(f"{T:>10} {times['SDPA (FlashAttn)']*1000:>11.1f}ms {times['MemEff (chunked)']*1000:>11.1f}ms "
               f"{times['Standard (naive)']*1000:>11.1f}ms {times['Local (window)']*1000:>11.1f}ms "
-              f"{times['Hybrid (w=128,g=64)']*1000:>11.1f}ms {times['SubQ (top-k=32)']*1000:>11.1f}ms {best_name:>15}")
+              f"{times['Hybrid (w=128,g=64)']*1000:>11.1f}ms {times['Local+LearnedG (w=128,g=32)']*1000:>11.1f}ms "
+              f"{times['SubQ (top-k=32)']*1000:>11.1f}ms {best_name:>15}")
 
         results[T] = times
 
