@@ -1,0 +1,124 @@
+{
+  "results": [
+    {
+      "model": "Qwen/Qwen2.5-14B",
+      "attention_type": "dense",
+      "seq_len": 2048,
+      "num_tokens": 32,
+      "top_k": 4,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 14770033664,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 3.4989964698520106,
+      "avg_time_sec": 9.145479361216227,
+      "times": [
+        9.076944589614868,
+        9.183951377868652,
+        9.175542116165161
+      ],
+      "load_time_sec": 38.653308629989624
+    },
+    {
+      "model": "Qwen/Qwen2.5-14B",
+      "attention_type": "dense",
+      "seq_len": 4096,
+      "num_tokens": 32,
+      "top_k": 4,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 14770033664,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.522364905781724,
+      "avg_time_sec": 12.686506986618042,
+      "times": [
+        12.918171644210815,
+        12.668128967285156,
+        12.473220348358154
+      ],
+      "load_time_sec": 36.819438219070435
+    },
+    {
+      "model": "Qwen/Qwen2.5-14B",
+      "attention_type": "sparse",
+      "seq_len": 2048,
+      "num_tokens": 32,
+      "top_k": 4,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 14770033664,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.341578841580647,
+      "avg_time_sec": 13.665992975234985,
+      "times": [
+        13.273630857467651,
+        14.080358505249023,
+        13.643989562988281
+      ],
+      "load_time_sec": 48.73888087272644
+    },
+    {
+      "model": "Qwen/Qwen2.5-14B",
+      "attention_type": "sparse",
+      "seq_len": 2048,
+      "num_tokens": 32,
+      "top_k": 8,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 14770033664,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.5164861286775397,
+      "avg_time_sec": 12.71614400545756,
+      "times": [
+        12.70834994316101,
+        12.66713571548462,
+        12.77294635772705
+      ],
+      "load_time_sec": 40.199671030044556
+    },
+    {
+      "model": "Qwen/Qwen2.5-14B",
+      "attention_type": "sparse",
+      "seq_len": 4096,
+      "num_tokens": 32,
+      "top_k": 4,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 14770033664,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 1.6472678253066504,
+      "avg_time_sec": 19.426106373469036,
+      "times": [
+        19.020703077316284,
+        19.439139366149902,
+        19.818476676940918
+      ],
+      "load_time_sec": 39.143771171569824
+    },
+    {
+      "model": "Qwen/Qwen2.5-14B",
+      "attention_type": "sparse",
+      "seq_len": 4096,
+      "num_tokens": 32,
+      "top_k": 8,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 14770033664,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 1.8156645014382982,
+      "avg_time_sec": 17.624401410420734,
+      "times": [
+        16.219266414642334,
+        18.35745668411255,
+        18.296481132507324
+      ],
+      "load_time_sec": 41.24185609817505
+    }
+  ]
+}

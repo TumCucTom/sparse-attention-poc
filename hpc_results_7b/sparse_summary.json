@@ -1,0 +1,185 @@
+{
+  "model": "Qwen/Qwen2.5-7B",
+  "results": [
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 2048,
+      "num_tokens": 64,
+      "top_k": 16,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.775685598658552,
+      "avg_time_sec": 23.057366450627644,
+      "times": [
+        23.177419662475586,
+        23.09972047805786,
+        22.894959211349487
+      ],
+      "load_time_sec": 12.954284429550171
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 2048,
+      "num_tokens": 64,
+      "top_k": 4,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.8168742395890107,
+      "avg_time_sec": 22.720219135284424,
+      "times": [
+        22.62707543373108,
+        22.740943908691406,
+        22.792638063430786
+      ],
+      "load_time_sec": 24.12476634979248
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 2048,
+      "num_tokens": 64,
+      "top_k": 8,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.6786078390273795,
+      "avg_time_sec": 23.893008550008137,
+      "times": [
+        24.09892201423645,
+        23.778975248336792,
+        23.801128387451172
+      ],
+      "load_time_sec": 18.010378122329712
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 4096,
+      "num_tokens": 64,
+      "top_k": 16,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.5625820450151826,
+      "avg_time_sec": 24.974810123443604,
+      "times": [
+        25.179750680923462,
+        25.057708978652954,
+        24.686970710754395
+      ],
+      "load_time_sec": 17.77498960494995
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 4096,
+      "num_tokens": 64,
+      "top_k": 4,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.5759009802961,
+      "avg_time_sec": 24.845675547917683,
+      "times": [
+        24.939817667007446,
+        24.845322132110596,
+        24.75188684463501
+      ],
+      "load_time_sec": 18.61764931678772
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 4096,
+      "num_tokens": 64,
+      "top_k": 8,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.4728685520957536,
+      "avg_time_sec": 25.880874236424763,
+      "times": [
+        25.967752695083618,
+        25.857733249664307,
+        25.817136764526367
+      ],
+      "load_time_sec": 25.9562029838562
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 8192,
+      "num_tokens": 64,
+      "top_k": 16,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.1952574314798663,
+      "avg_time_sec": 29.153756221135456,
+      "times": [
+        29.3219895362854,
+        29.03188419342041,
+        29.10739493370056
+      ],
+      "load_time_sec": 15.994689702987671
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 8192,
+      "num_tokens": 64,
+      "top_k": 4,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.289704457874036,
+      "avg_time_sec": 27.951205571492512,
+      "times": [
+        27.930419921875,
+        27.737566709518433,
+        28.185630083084106
+      ],
+      "load_time_sec": 27.999407291412354
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B",
+      "attention_type": "sparse",
+      "seq_len": 8192,
+      "num_tokens": 64,
+      "top_k": 8,
+      "block_size": 16,
+      "index_dim": 32,
+      "num_params": 7615616512,
+      "memory_gb": 0,
+      "memory_peak_gb": 0,
+      "avg_speed_tokens_per_sec": 2.2358841763071995,
+      "avg_time_sec": 28.624022960662842,
+      "times": [
+        28.579153060913086,
+        28.715439081192017,
+        28.577476739883423
+      ],
+      "load_time_sec": 18.62213921546936
+    }
+  ]
+}

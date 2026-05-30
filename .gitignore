@@ -1,0 +1,10 @@
+__pycache__
+*.out
+*.err
+train_results/
+sweep_results/
+checkpoints/
+*.log
+hf_cache/
+venv/
+docs/

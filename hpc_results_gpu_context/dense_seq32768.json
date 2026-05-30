@@ -1,0 +1,20 @@
+{
+  "model": "Qwen/Qwen2.5-7B",
+  "attention_type": "dense",
+  "seq_len": 32768,
+  "num_tokens": 32,
+  "top_k": 4,
+  "block_size": 16,
+  "index_dim": 32,
+  "num_params": 7615616512,
+  "memory_gb": 14.186168670654297,
+  "memory_peak_gb": 14.186168670654297,
+  "avg_speed_tokens_per_sec": 72.29768058521425,
+  "avg_time_sec": 0.44261447588602704,
+  "times": [
+    0.44219303131103516,
+    0.44170045852661133,
+    0.44394993782043457
+  ],
+  "load_time_sec": 2.3211517333984375
+}
