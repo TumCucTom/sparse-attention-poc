@@ -70,50 +70,67 @@ def get_kwargs(attention_type, args):
 
 
 def replace_attention(model, attention_class, **kwargs):
-    """Replace Qwen2Attention with custom attention."""
+    """Replace attention modules with custom attention (supports Qwen2, Llama, Yi)."""
+    import types
+
+    # Try multiple attention class types
+    attention_classes = []
     try:
         from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
+        attention_classes.append(Qwen2Attention)
     except ImportError:
-        print("ERROR: Could not import Qwen2Attention")
+        pass
+
+    try:
+        from transformers.models.llama.modeling_llama import LlamaAttention
+        attention_classes.append(LlamaAttention)
+    except ImportError:
+        pass
+
+    try:
+        from transformers.models.yi.modeling_yi import YiAttention
+        attention_classes.append(YiAttention)
+    except ImportError:
+        pass
+
+    if not attention_classes:
+        print("ERROR: Could not import any attention class (Qwen2Attention, LlamaAttention, YiAttention)")
         return 0, []
 
-    import types
     count = [0]
     attn_modules = []
     device = next(model.parameters()).device
 
     def replace(module):
-        if isinstance(module, Qwen2Attention):
-            count[0] += 1
-            config = module.config
+        for attn_cls in attention_classes:
+            if isinstance(module, attn_cls):
+                count[0] += 1
+                config = module.config
 
-            print(f"DEBUG replace layer {count[0]}: hidden_size={config.hidden_size}, num_heads={config.num_attention_heads}, num_kv_heads={config.num_key_value_heads}, head_dim={module.head_dim}")
+                print(f"DEBUG replace layer {count[0]}: type={attn_cls.__name__}, hidden_size={config.hidden_size}, num_heads={config.num_attention_heads}, num_kv_heads={config.num_key_value_heads}, head_dim={module.head_dim}")
 
-            dtype = next(model.parameters()).dtype
-            attn = attention_class(
-                hidden_size=config.hidden_size,
-                num_heads=config.num_attention_heads,
-                num_kv_heads=config.num_key_value_heads,
-                head_dim=module.head_dim,
-                **kwargs,
-            ).to(device=device, dtype=dtype)
+                dtype = next(model.parameters()).dtype
+                attn = attention_class(
+                    hidden_size=config.hidden_size,
+                    num_heads=config.num_attention_heads,
+                    num_kv_heads=config.num_key_value_heads,
+                    head_dim=module.head_dim,
+                    **kwargs,
+                ).to(device=device, dtype=dtype)
 
-            with torch.no_grad():
-                attn.q_proj.weight.copy_(module.q_proj.weight)
-                attn.k_proj.weight.copy_(module.k_proj.weight)
-                attn.v_proj.weight.copy_(module.v_proj.weight)
-                attn.o_proj.weight.copy_(module.o_proj.weight)
+                with torch.no_grad():
+                    attn.q_proj.weight.copy_(module.q_proj.weight)
+                    attn.k_proj.weight.copy_(module.k_proj.weight)
+                    attn.v_proj.weight.copy_(module.v_proj.weight)
+                    attn.o_proj.weight.copy_(module.o_proj.weight)
 
-            # Skip _init_index_from_attention for now to test if that's the issue
-            # if hasattr(attn, '_init_index_from_attention'):
-            #     attn._init_index_from_attention()
+                attn_modules.append(attn)
 
-            attn_modules.append(attn)
+                def new_forward(self, hidden_states, **kw):
+                    return attn(hidden_states, **kw)
 
-            def new_forward(self, hidden_states, **kw):
-                return attn(hidden_states, **kw)
-
-            module.forward = types.MethodType(new_forward, module)
+                module.forward = types.MethodType(new_forward, module)
+                break  # Only replace once per module
 
     model.apply(replace)
     return count[0], attn_modules
@@ -141,7 +158,8 @@ def benchmark_model(args):
     print(f"{'='*70}")
 
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    token = os.environ.get('HF_TOKEN', None)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, token=token)
     tokenizer.pad_token = tokenizer.eos_token
 
     # Create prompt
@@ -163,6 +181,7 @@ def benchmark_model(args):
                 torch_dtype=torch.float16,
                 device_map={"": 0},  # Put all on cuda:0
                 trust_remote_code=True,
+                token=token,
             )
     except Exception as e:
         print(f"device_map failed ({e}), trying CPU fallback...")

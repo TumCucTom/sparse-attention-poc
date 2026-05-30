@@ -1,0 +1,20 @@
+{
+  "model": "01-ai/Yi-34B-200K",
+  "attention_type": "dense",
+  "seq_len": 65536,
+  "num_tokens": 32,
+  "top_k": 4,
+  "block_size": 16,
+  "index_dim": 32,
+  "num_params": 34388917248,
+  "memory_gb": 64.05435085296631,
+  "memory_peak_gb": 64.05435085296631,
+  "avg_speed_tokens_per_sec": 4.869119301609476,
+  "avg_time_sec": 6.572030385335286,
+  "times": [
+    6.57495379447937,
+    6.573941946029663,
+    6.567195415496826
+  ],
+  "load_time_sec": 8.159692287445068
+}
