@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--attention-type", type=str, default="sparse",
-                       choices=["sparse", "hybrid", "dense", "dsa"])
+                       choices=["sparse", "hybrid", "dense", "dsa", "local"])
     return parser.parse_args()
 
 
@@ -54,6 +54,8 @@ def get_attention_class(attention_type):
         return HybridLocalGlobalAttention
     elif attention_type == "dsa":
         return DeepSeekSparseAttention
+    elif attention_type == "local":
+        return StandardAttention
     raise ValueError(f"Unknown attention type: {attention_type}")
 
 
