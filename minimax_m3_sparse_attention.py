@@ -172,22 +172,32 @@ class MiniMaxSparseAttention(nn.Module):
         k_selected = torch.gather(k_rep, 2, gather_idx)  # [B, H, actual_k*block, head_dim]
         v_selected = torch.gather(v_rep, 2, gather_idx)
 
-        # Compute attention scores
-        q_f = q.float()
-        k_f = k_selected.float()
-        scores = torch.matmul(q_f, k_f.transpose(-2, -1)) * self.scale
-
-        # Causal mask: query at position i can only attend to positions <= i
+        # Create causal mask for selected positions
         k_pos = position_indices.view(batch_size, num_heads, actual_k * block_size, 1)
         q_pos = torch.arange(seq_len, device=q.device).view(1, 1, 1, seq_len)
         causal_mask = (k_pos <= q_pos).transpose(-2, -1)
 
-        scores = scores.masked_fill(~causal_mask, -1e9)
+        # Use SDPA with explicit mask for potential Flash Attention optimization
+        try:
+            # Flash Attention via SDPA with explicit causal mask
+            attn_mask = torch.zeros_like(causal_mask, dtype=torch.bool)
+            attn_mask = causal_mask  # True means "use this attention"
 
-        # Softmax and compute output
-        attn = F.softmax(scores, dim=-1)
-        v_f = v_selected.float()
-        out = torch.matmul(attn, v_f)
+            out = F.scaled_dot_product_attention(
+                q.to(torch.float32),
+                k_selected.to(torch.float32),
+                v_selected.to(torch.float32),
+                attn_mask=attn_mask,
+                dropout_p=0.0,
+                is_causal=False,
+                scale=self.scale
+            )
+        except Exception:
+            # Fallback to manual computation
+            scores = torch.matmul(q.float(), k_selected.float().transpose(-2, -1)) * self.scale
+            scores = scores.masked_fill(~causal_mask, -1e9)
+            attn = F.softmax(scores, dim=-1)
+            out = torch.matmul(attn, v_selected.float())
 
         return out.to(dtype=q.dtype)
 
