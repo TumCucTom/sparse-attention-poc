@@ -268,7 +268,7 @@ class HybridLocalGlobalAttention(nn.Module):
 
         return out
 
-    def forward(self, hidden_states, attention_mask=None, **kwargs):
+    def forward(self, hidden_states, attention_mask=None, past_key_value=None, **kwargs):
         batch_size, seq_len, hidden_size = hidden_states.shape
 
         # Project Q, K, V

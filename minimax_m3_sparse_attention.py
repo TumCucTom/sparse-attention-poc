@@ -65,12 +65,11 @@ class MiniMaxSparseAttention(nn.Module):
     def _init_index_from_attention(self):
         """Initialize index projections from attention projections for warm start."""
         with torch.no_grad():
-            q_weight = self.q_proj.weight
-            k_weight = self.k_proj.weight
-            H = self.num_heads
-            h = self.num_kv_heads
-            self.index_q.weight.copy_(q_weight[:H * self.index_dim, :])
-            self.index_k.weight.copy_(k_weight[:h * self.index_dim, :])
+            target_dtype = self.index_q.weight.dtype
+            q_weight = self.q_proj.weight.float()[:self.num_heads * self.index_dim, :].to(target_dtype)
+            k_weight = self.k_proj.weight.float()[:self.num_kv_heads * self.index_dim, :].to(target_dtype)
+            self.index_q.weight.copy_(q_weight)
+            self.index_k.weight.copy_(k_weight)
 
     def _compute_block_scores(self, idx_q: torch.Tensor, idx_k: torch.Tensor) -> torch.Tensor:
         """
@@ -80,20 +79,33 @@ class MiniMaxSparseAttention(nn.Module):
         idx_k: [batch, seq_len, num_kv_heads, index_dim]
         Returns: [batch, num_heads, num_blocks, num_blocks] block-level scores
         """
+        import os
         batch_size, seq_len, num_heads, idx_dim = idx_q.shape
         num_kv_heads = idx_k.shape[2]
 
         num_blocks = (seq_len + self.block_size - 1) // self.block_size
-        pad_len = num_blocks * self.block_size
 
-        # Pad and reshape to blocks
-        q_padded = torch.zeros(batch_size, pad_len, num_heads, idx_dim, device=idx_q.device, dtype=torch.float32)
-        q_padded[:, :seq_len] = idx_q.float()
-        q_blocks = q_padded.view(batch_size, num_blocks, self.block_size, num_heads, idx_dim)
+        # Calculate expected total size after padding
+        expected_total = num_blocks * self.block_size
+        pad_len = expected_total - seq_len
 
-        k_padded = torch.zeros(batch_size, pad_len, num_kv_heads, idx_dim, device=idx_k.device, dtype=torch.float32)
-        k_padded[:, :seq_len] = idx_k.float()
-        k_blocks = k_padded.view(batch_size, num_blocks, self.block_size, num_kv_heads, idx_dim)
+        # Handle case where seq_len is exactly divisible by block_size (pad_len = 0)
+        if pad_len > 0:
+            # Pad and reshape to blocks
+            # Create tensor with full padded length (expected_total = seq_len + pad_len)
+            padded_seq_len = expected_total  # This is seq_len + pad_len
+            q_padded = torch.zeros(batch_size, padded_seq_len, num_heads, idx_dim, device=idx_q.device, dtype=torch.float32)
+            q_padded[:, :seq_len] = idx_q.float()
+            q_blocks = q_padded.view(batch_size, num_blocks, self.block_size, num_heads, idx_dim)
+
+            k_padded = torch.zeros(batch_size, padded_seq_len, num_kv_heads, idx_dim, device=idx_k.device, dtype=torch.float32)
+            k_padded[:, :seq_len] = idx_k.float()
+            k_blocks = k_padded.view(batch_size, num_blocks, self.block_size, num_kv_heads, idx_dim)
+        else:
+            # No padding needed - reshape original tensor directly to blocks
+            # seq_len == num_blocks * block_size
+            q_blocks = idx_q.float().view(batch_size, num_blocks, self.block_size, num_heads, idx_dim)
+            k_blocks = idx_k.float().view(batch_size, num_blocks, self.block_size, num_kv_heads, idx_dim)
 
         # Average pooling within blocks
         q_avg = q_blocks.mean(dim=2)  # [B, nb, H, d]
@@ -107,6 +119,9 @@ class MiniMaxSparseAttention(nn.Module):
             q_avg.permute(0, 2, 1, 3),
             k_avg_rep.permute(0, 2, 3, 1)
         ) * (idx_dim ** -0.5)
+
+        # Clamp scores to prevent overflow in fp16 softmax (done in fp32)
+        scores = scores.float().clamp(-1e4, 1e4)
 
         # Causal mask at block level
         causal = torch.tril(torch.ones(num_blocks, num_blocks, device=scores.device, dtype=torch.bool))
@@ -132,29 +147,35 @@ class MiniMaxSparseAttention(nn.Module):
         """
         batch_size, num_heads, seq_len, head_dim = q.shape
         block_size = self.block_size
+        num_kv_heads = k.shape[1]
         actual_k = selected_blocks.shape[-1]
 
-        # GQA: repeat KV heads
+        # GQA: repeat KV heads to match query head count
         k_rep = k.repeat_interleave(self.num_key_value_groups, dim=1)
         v_rep = v.repeat_interleave(self.num_key_value_groups, dim=1)
 
+        # Clamp block indices to valid range
+        max_block = (seq_len + block_size - 1) // block_size
+        selected_blocks = selected_blocks.clamp(0, max_block - 1)
+
         # Convert block indices to position indices
-        block_offsets = torch.arange(block_size, device=q.device).view(1, 1, 1, block_size)
+        block_offsets = torch.arange(block_size, device=q.device, dtype=torch.long).view(1, 1, 1, block_size)
         block_base = selected_blocks.unsqueeze(-1) * block_size
         position_indices = (block_base + block_offsets).view(batch_size, num_heads, actual_k * block_size)
 
-        # Gather KV from selected positions
-        k_selected = torch.gather(
-            k_rep, 2,
-            position_indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
-        )
-        v_selected = torch.gather(
-            v_rep, 2,
-            position_indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
-        )
+        # Clamp position indices to valid range
+        position_indices = position_indices.clamp(0, seq_len - 1)
+
+        # Gather KV from selected positions - expand properly for head_dim
+        gather_idx = position_indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)  # [B, H, actual_k*block, head_dim]
+
+        k_selected = torch.gather(k_rep, 2, gather_idx)  # [B, H, actual_k*block, head_dim]
+        v_selected = torch.gather(v_rep, 2, gather_idx)
 
         # Compute attention scores
-        scores = torch.matmul(q.float(), k_selected.float().transpose(-2, -1)) * self.scale
+        q_f = q.float()
+        k_f = k_selected.float()
+        scores = torch.matmul(q_f, k_f.transpose(-2, -1)) * self.scale
 
         # Causal mask: query at position i can only attend to positions <= i
         k_pos = position_indices.view(batch_size, num_heads, actual_k * block_size, 1)
@@ -165,36 +186,52 @@ class MiniMaxSparseAttention(nn.Module):
 
         # Softmax and compute output
         attn = F.softmax(scores, dim=-1)
-        out = torch.matmul(attn, v_selected)
+        v_f = v_selected.float()
+        out = torch.matmul(attn, v_f)
 
-        return out
+        return out.to(dtype=q.dtype)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
-    ) -> Tuple[torch.Tensor, None]:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         batch_size, seq_len, hidden_size = hidden_states.shape
 
+        # Cast input to match weight dtype for linear layers
+        weight_dtype = self.q_proj.weight.dtype
+        x_f16 = hidden_states.to(dtype=weight_dtype)
+
         # Stage 1: Index attention and block selection
-        idx_q = self.index_q(hidden_states).view(batch_size, seq_len, self.num_heads, self.index_dim)
-        idx_k = self.index_k(hidden_states).view(batch_size, seq_len, self.num_kv_heads, self.index_dim)
+        idx_q = self.index_q(x_f16).view(batch_size, seq_len, self.num_heads, self.index_dim)
+        idx_k = self.index_k(x_f16).view(batch_size, seq_len, self.num_kv_heads, self.index_dim)
 
         block_scores = self._compute_block_scores(idx_q, idx_k)
+
         actual_k = min(self.top_k_blocks, block_scores.shape[-1])
         _, topk_blocks = block_scores.topk(actual_k, dim=-1)
-        topk_blocks = topk_blocks[:, :, 0, :]  # Use first query block's selection
+        # topk_blocks is [batch, num_heads, num_blocks, top_k] - use first key block dimension
+        topk_blocks = topk_blocks[:, :, 0, :]  # [batch, num_heads, top_k] - Use first kv block's selection
 
         # Stage 2: Main attention on selected blocks
-        q = self.q_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k = self.k_proj(hidden_states).view(batch_size, seq_len, self.num_kv_heads, self.head_dim).permute(0, 2, 1, 3)
-        v = self.v_proj(hidden_states).view(batch_size, seq_len, self.num_kv_heads, self.head_dim).permute(0, 2, 1, 3)
+        q = self.q_proj(x_f16).view(batch_size, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        k = self.k_proj(x_f16).view(batch_size, seq_len, self.num_kv_heads, self.head_dim).permute(0, 2, 1, 3)
+        v = self.v_proj(x_f16).view(batch_size, seq_len, self.num_kv_heads, self.head_dim).permute(0, 2, 1, 3)
 
         out = self._sparse_attention(q, k, v, topk_blocks)
 
         out = out.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, hidden_size)
-        return self.o_proj(out), None
+        out = self.o_proj(out)
+        # Return 2 values to match what the model expects
+        # (attn_output, attn_weights) - past_key_value not used in sparse mode
+        return out.to(dtype=hidden_states.dtype), None
 
 
 class StandardAttention(nn.Module):
@@ -212,7 +249,9 @@ class StandardAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=False)
         self.o_proj = nn.Linear(num_heads * head_dim, hidden_size, bias=False)
 
-    def forward(self, hidden_states, attention_mask=None, **kwargs):
+    def forward(self, hidden_states, attention_mask=None, position_ids=None,
+                past_key_value=None, output_attentions=False, use_cache=False,
+                cache_position=None, position_embeddings=None, **kwargs):
         batch_size, seq_len, hidden_size = hidden_states.shape
 
         q = self.q_proj(hidden_states).view(batch_size, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
@@ -235,6 +274,7 @@ class StandardAttention(nn.Module):
         out = torch.matmul(attn, v_rep)
 
         out = out.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, hidden_size)
+        # Return 2 values to match what the model expects
         return self.o_proj(out), None
 
 
@@ -242,6 +282,7 @@ def replace_attention(model, attention_class, **kwargs):
     """Replace Qwen2Attention with custom attention."""
     from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
     import types
+    import os
 
     count = [0]
     attn_modules = []
@@ -251,6 +292,9 @@ def replace_attention(model, attention_class, **kwargs):
         if isinstance(module, Qwen2Attention):
             count[0] += 1
             config = module.config
+
+            if os.environ.get('DEBUG_SPARSE') == '1':
+                print(f"DEBUG replace: layer {count[0]}, num_attention_heads={config.num_attention_heads}, num_key_value_heads={config.num_key_value_heads}, head_dim={module.head_dim}")
 
             attn = attention_class(
                 hidden_size=config.hidden_size,

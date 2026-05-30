@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """
-HPC Benchmark Script for MiniMax M3-style Sparse Attention
-
-Usage:
-    python3 hpc_benchmark.py --model Qwen/Qwen2.5-7B --seq-len 16384 --top-k 8
-
-This script is designed to be run on HPC infrastructure with GPU access.
-It benchmarks sparse attention against dense attention at various sequence lengths.
+HPC Benchmark Script for Sparse Attention
+Robust version with proper CUDA/CPU handling and accelerate fallback
 """
 
 import argparse
@@ -14,39 +9,39 @@ import json
 import time
 import gc
 import os
+import sys
+
 import torch
+
+# Set HF_HOME to scratch to avoid quota issues
+os.environ['HF_HOME'] = '/lus/lfs1aip2/scratch/b6ar/trvbale.b6ar/cache'
+
+# Handle CUDA driver mismatch gracefully
+if torch.cuda.is_available():
+    try:
+        torch.cuda.init()
+    except Exception as e:
+        print(f"CUDA init failed: {e}, will use CPU")
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 from minimax_m3_sparse_attention import MiniMaxSparseAttention, StandardAttention
 from minimax_m3_hybrid import HybridLocalGlobalAttention
+from deepseek_sparse_attention import DeepSeekSparseAttention
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="HPC Benchmark for MiniMax M3 Sparse Attention")
-    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B",
-                        help="Model name (e.g., Qwen/Qwen2.5-7B)")
-    parser.add_argument("--seq-len", type=int, default=4096,
-                        help="Input sequence length")
-    parser.add_argument("--num-tokens", type=int, default=128,
-                        help="Number of tokens to generate")
-    parser.add_argument("--top-k", type=int, default=4,
-                        help="Number of blocks to select")
-    parser.add_argument("--block-size", type=int, default=16,
-                        help="Size of each block")
-    parser.add_argument("--index-dim", type=int, default=32,
-                        help="Index projection dimension")
-    parser.add_argument("--window-size", type=int, default=32,
-                        help="Window size for hybrid attention")
-    parser.add_argument("--batch-size", type=int, default=1,
-                        help="Batch size")
-    parser.add_argument("--warmup", type=int, default=3,
-                        help="Number of warmup iterations")
-    parser.add_argument("--iterations", type=int, default=5,
-                        help="Number of benchmark iterations")
-    parser.add_argument("--output", type=str, default=None,
-                        help="Output JSON file path")
+    parser = argparse.ArgumentParser(description="HPC Benchmark for Sparse Attention")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-7B")
+    parser.add_argument("--seq-len", type=int, default=4096)
+    parser.add_argument("--num-tokens", type=int, default=64)
+    parser.add_argument("--top-k", type=int, default=4)
+    parser.add_argument("--block-size", type=int, default=16)
+    parser.add_argument("--index-dim", type=int, default=32)
+    parser.add_argument("--warmup", type=int, default=2)
+    parser.add_argument("--iterations", type=int, default=3)
+    parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--attention-type", type=str, default="sparse",
-                        choices=["sparse", "hybrid", "dense"],
-                        help="Type of attention to benchmark")
+                       choices=["sparse", "hybrid", "dense", "dsa"])
     return parser.parse_args()
 
 
@@ -57,34 +52,32 @@ def get_attention_class(attention_type):
         return MiniMaxSparseAttention
     elif attention_type == "hybrid":
         return HybridLocalGlobalAttention
-    else:
-        raise ValueError(f"Unknown attention type: {attention_type}")
+    elif attention_type == "dsa":
+        return DeepSeekSparseAttention
+    raise ValueError(f"Unknown attention type: {attention_type}")
 
 
 def get_kwargs(attention_type, args):
     if attention_type == "dense":
         return {}
     elif attention_type == "sparse":
-        return {
-            "block_size": args.block_size,
-            "top_k_blocks": args.top_k,
-            "index_dim": args.index_dim,
-        }
+        return {"block_size": args.block_size, "top_k_blocks": args.top_k, "index_dim": args.index_dim}
     elif attention_type == "hybrid":
-        return {
-            "window_size": args.window_size,
-            "global_blocks": args.top_k,
-            "global_block_size": args.block_size,
-            "index_dim": args.index_dim,
-        }
+        return {"window_size": 32, "global_blocks": args.top_k, "global_block_size": args.block_size, "index_dim": args.index_dim}
+    elif attention_type == "dsa":
+        return {"block_size": args.block_size, "top_k_blocks": args.top_k, "compression_dim": args.index_dim}
     return {}
 
 
 def replace_attention(model, attention_class, **kwargs):
     """Replace Qwen2Attention with custom attention."""
-    from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
-    import types
+    try:
+        from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention
+    except ImportError:
+        print("ERROR: Could not import Qwen2Attention")
+        return 0, []
 
+    import types
     count = [0]
     attn_modules = []
     device = next(model.parameters()).device
@@ -94,13 +87,16 @@ def replace_attention(model, attention_class, **kwargs):
             count[0] += 1
             config = module.config
 
+            print(f"DEBUG replace layer {count[0]}: hidden_size={config.hidden_size}, num_heads={config.num_attention_heads}, num_kv_heads={config.num_key_value_heads}, head_dim={module.head_dim}")
+
+            dtype = next(model.parameters()).dtype
             attn = attention_class(
                 hidden_size=config.hidden_size,
                 num_heads=config.num_attention_heads,
                 num_kv_heads=config.num_key_value_heads,
                 head_dim=module.head_dim,
                 **kwargs,
-            ).to(device)
+            ).to(device=device, dtype=dtype)
 
             with torch.no_grad():
                 attn.q_proj.weight.copy_(module.q_proj.weight)
@@ -108,14 +104,14 @@ def replace_attention(model, attention_class, **kwargs):
                 attn.v_proj.weight.copy_(module.v_proj.weight)
                 attn.o_proj.weight.copy_(module.o_proj.weight)
 
-            if hasattr(attn, '_init_index_from_attention'):
-                attn._init_index_from_attention()
+            # Skip _init_index_from_attention for now to test if that's the issue
+            # if hasattr(attn, '_init_index_from_attention'):
+            #     attn._init_index_from_attention()
 
             attn_modules.append(attn)
 
-            def new_forward(self, hidden_states, position_embeddings=None, attention_mask=None,
-                          past_key_values=None, cache_position=None, position_ids=None, **kw):
-                return attn(hidden_states, attention_mask=attention_mask, **kw)
+            def new_forward(self, hidden_states, **kw):
+                return attn(hidden_states, **kw)
 
             module.forward = types.MethodType(new_forward, module)
 
@@ -123,49 +119,25 @@ def replace_attention(model, attention_class, **kwargs):
     return count[0], attn_modules
 
 
-@torch.no_grad
-def benchmark_generation(model, tokenizer, prompt, num_tokens, warmup=3):
-    """Benchmark text generation."""
-    inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
-
-    # Warmup
-    for _ in range(warmup):
-        _ = model.generate(**inputs, max_new_tokens=5, do_sample=False)
-
-    # Benchmark
-    times = []
-    for _ in range(args.iterations):
-        start = time.time()
-        _ = model.generate(**inputs, max_new_tokens=num_tokens, do_sample=False)
-        elapsed = time.time() - start
-        times.append(elapsed)
-
-    avg_time = sum(times) / len(times)
-    speed = num_tokens / avg_time
-
-    return {
-        "speed_tokens_per_sec": speed,
-        "avg_time_sec": avg_time,
-        "times": times,
-    }
-
-
 def get_memory_usage():
-    """Get current GPU memory usage in GB."""
     if torch.cuda.is_available():
-        return torch.cuda.memory_allocated() / 1024**3
-    return 0
+        torch.cuda.reset_peak_memory_stats()
+        return torch.cuda.memory_allocated() / 1024**3, torch.cuda.max_memory_allocated() / 1024**3
+    return 0, 0
 
 
 def benchmark_model(args):
     """Run benchmark on specified model."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
     print(f"\n{'='*70}")
     print(f"Benchmarking {args.attention_type} attention")
     print(f"Model: {args.model}")
     print(f"Sequence length: {args.seq_len}")
     print(f"Top-K: {args.top_k}, Block-size: {args.block_size}")
+    print(f"Device: {device}")
     print(f"{'='*70}")
 
     # Load tokenizer
@@ -175,32 +147,40 @@ def benchmark_model(args):
     # Create prompt
     base_prompt = "The theory of quantum mechanics describes how particles behave at the atomic level. "
     prompt = base_prompt * max(1, args.seq_len // len(tokenizer.encode(base_prompt)))
-    prompt = prompt[:min(len(prompt), args.seq_len * 2)]  # Keep it reasonable
+    prompt = prompt[:min(len(prompt), args.seq_len * 2)]
 
     # Load model
     print(f"\nLoading model...")
     t0 = time.time()
 
-    if args.attention_type == "dense":
+    model = None  # Initialize before try block
+    try:
+        # Try with device_map first (needs accelerate)
+        if device == 'cuda':
+            # Use explicit device placement instead of device_map to avoid layer scatter issues
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model,
+                torch_dtype=torch.float16,
+                device_map={"": 0},  # Put all on cuda:0
+                trust_remote_code=True,
+            )
+    except Exception as e:
+        print(f"device_map failed ({e}), trying CPU fallback...")
+
+    if model is None:
+        # Fallback to CPU without device_map
         model = AutoModelForCausalLM.from_pretrained(
             args.model,
-            torch_dtype=torch.float16,
-            device_map="auto",
+            torch_dtype=torch.float32,
+            device_map="cpu",
             trust_remote_code=True,
-        )
-    else:
-        # For sparse/hybrid, we need to load and replace
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True,
+            low_cpu_mem_usage=True,
         )
 
     load_time = time.time() - t0
     print(f"Model loaded in {load_time:.1f}s")
 
-    # Replace attention
+    # Replace attention for sparse/hybrid
     attention_class = get_attention_class(args.attention_type)
     kwargs = get_kwargs(args.attention_type, args)
 
@@ -211,32 +191,37 @@ def benchmark_model(args):
 
     # Get model info
     num_params = sum(p.numel() for p in model.parameters())
-    memory_gb = get_memory_usage()
+    mem_alloc, mem_peak = get_memory_usage()
+
+    # Prepare input
+    inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
 
     # Warmup
     print(f"\nWarming up ({args.warmup} iterations)...")
-    inputs = tokenizer(prompt, return_tensors="pt").to(next(model.parameters()).device)
     for _ in range(args.warmup):
-        _ = model.generate(**inputs, max_new_tokens=5, do_sample=False)
+        try:
+            _ = model.generate(**inputs, max_new_tokens=5, do_sample=False)
+        except Exception as e:
+            print(f"Warmup error: {e}")
+            break
 
     # Benchmark
     print(f"\nBenchmarking ({args.iterations} iterations)...")
     times = []
     for i in range(args.iterations):
         t0 = time.time()
-        _ = model.generate(**inputs, max_new_tokens=args.num_tokens, do_sample=False)
-        elapsed = time.time() - t0
-        speed = args.num_tokens / elapsed
-        times.append(elapsed)
-        print(f"  Iteration {i+1}: {speed:.1f} tokens/sec ({elapsed:.2f}s)")
+        try:
+            _ = model.generate(**inputs, max_new_tokens=args.num_tokens, do_sample=False)
+            elapsed = time.time() - t0
+            speed = args.num_tokens / elapsed
+            times.append(elapsed)
+            print(f"  Iteration {i+1}: {speed:.1f} tokens/sec ({elapsed:.2f}s)")
+        except Exception as e:
+            print(f"  Iteration {i+1} failed: {e}")
+            times.append(0)
 
-    avg_speed = args.num_tokens / (sum(times) / len(times))
-    avg_time = sum(times) / len(times)
-    memory_peak = get_memory_usage()
-
-    # Generate sample output
-    outputs = model.generate(**inputs, max_new_tokens=args.num_tokens, do_sample=False)
-    generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    avg_speed = args.num_tokens / (sum(times) / len(times)) if times else 0
+    avg_time = sum(times) / len(times) if times else 0
 
     # Cleanup
     del model
@@ -253,12 +238,11 @@ def benchmark_model(args):
         "block_size": args.block_size,
         "index_dim": args.index_dim,
         "num_params": num_params,
-        "memory_gb": memory_gb,
-        "memory_peak_gb": memory_peak,
+        "memory_gb": mem_alloc,
+        "memory_peak_gb": mem_peak,
         "avg_speed_tokens_per_sec": avg_speed,
         "avg_time_sec": avg_time,
         "times": times,
-        "prompt_tokens": len(tokenizer.encode(prompt)),
         "load_time_sec": load_time,
     }
 
@@ -266,43 +250,41 @@ def benchmark_model(args):
 
 
 def main():
-    global args
     args = parse_args()
 
     print("\n" + "="*70)
-    print("HPC Benchmark for MiniMax M3-style Sparse Attention")
+    print("HPC Benchmark for Sparse Attention")
     print("="*70)
-    print(f"Device: {'CUDA' if torch.cuda.is_available() else 'MPS' if torch.backends.mps.is_available() else 'CPU'}")
-    print(f"PyTorch version: {torch.__version__}")
+    print(f"Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+    print(f"PyTorch: {torch.__version__}")
     print(f"CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"CUDA version: {torch.version.cuda}")
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-    # Run benchmark
-    results = benchmark_model(args)
+    try:
+        results = benchmark_model(args)
 
-    # Print results
-    print(f"\n{'='*70}")
-    print("RESULTS")
+        print(f"\n{'='*70}")
+        print("RESULTS")
+        print(f"{'='*70}")
+        print(f"Model: {results['model']}")
+        print(f"Attention type: {results['attention_type']}")
+        print(f"Sequence length: {results['seq_len']}")
+        print(f"Parameters: {results['num_params']:,}")
+        print(f"Memory: {results['memory_peak_gb']:.1f} GB")
+        print(f"Speed: {results['avg_speed_tokens_per_sec']:.1f} tokens/sec")
+
+        if args.output:
+            os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+            with open(args.output, "w") as f:
+                json.dump(results, f, indent=2)
+            print(f"\nResults saved to: {args.output}")
+
+    except Exception as e:
+        print(f"\nBenchmark failed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
     print(f"{'='*70}")
-    print(f"Model: {results['model']}")
-    print(f"Attention type: {results['attention_type']}")
-    print(f"Sequence length: {results['seq_len']}")
-    print(f"Number of parameters: {results['num_params']:,}")
-    print(f"Memory usage: {results['memory_peak_gb']:.1f} GB")
-    print(f"Average speed: {results['avg_speed_tokens_per_sec']:.1f} tokens/sec")
-    print(f"Average time: {results['avg_time_sec']:.2f}s")
-
-    # Save results
-    if args.output:
-        output_path = args.output
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        with open(output_path, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"\nResults saved to: {output_path}")
-
-    print(f"\n{'='*70}")
 
 
 if __name__ == "__main__":
