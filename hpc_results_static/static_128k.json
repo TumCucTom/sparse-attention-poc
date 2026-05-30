@@ -1,0 +1,15 @@
+{
+  "model": "Qwen/Qwen2.5-14B",
+  "attention_type": "static_window",
+  "seq_len": 131072,
+  "window_size": 128,
+  "input_tokens": 43690,
+  "num_tokens": 32,
+  "memory_peak_gb": 38.231635093688965,
+  "avg_speed_tokens_per_sec": 12.0167582089791,
+  "times": [
+    2.6600499153137207,
+    2.6658363342285156,
+    2.662957191467285
+  ]
+}

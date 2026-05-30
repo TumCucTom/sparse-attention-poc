@@ -1,0 +1,14 @@
+{
+  "model": "mistralai/Mixtral-8x7B-v0.1",
+  "attention_type": "sparse",
+  "seq_len": 65536,
+  "input_tokens": 21847,
+  "num_tokens": 32,
+  "memory_peak_gb": 93.61872243881226,
+  "avg_speed_tokens_per_sec": 0,
+  "times": [
+    0,
+    0,
+    0
+  ]
+}

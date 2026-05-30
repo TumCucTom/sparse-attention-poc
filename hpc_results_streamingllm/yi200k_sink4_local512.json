@@ -1,0 +1,8 @@
+{
+  "attention_type": "streamingllm",
+  "model": "01-ai/Yi-34B-200K",
+  "sink_tokens": 4,
+  "local_window": 512,
+  "memory_gb": 0.0,
+  "avg_speed_tokens_per_sec": 0
+}

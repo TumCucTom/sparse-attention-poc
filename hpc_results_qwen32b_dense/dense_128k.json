@@ -1,0 +1,14 @@
+{
+  "model": "Qwen/Qwen2.5-32B",
+  "attention_type": "dense",
+  "seq_len": 131072,
+  "input_tokens": 43690,
+  "num_tokens": 32,
+  "memory_peak_gb": 80.164231300354,
+  "avg_speed_tokens_per_sec": 3.0224331070433452,
+  "times": [
+    10.538157224655151,
+    10.602462530136108,
+    10.621869802474976
+  ]
+}

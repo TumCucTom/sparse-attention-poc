@@ -1,0 +1,17 @@
+{
+  "model": "Qwen/Qwen2.5-14B",
+  "attention_type": "sparse",
+  "seq_len": 262144,
+  "top_k": 4,
+  "block_size": 32,
+  "index_dim": 32,
+  "input_tokens": 87381,
+  "num_tokens": 32,
+  "memory_peak_gb": 51.459776401519775,
+  "avg_speed_tokens_per_sec": 4.7398840033069805,
+  "times": [
+    6.75141167640686,
+    6.741405248641968,
+    6.760843276977539
+  ]
+}

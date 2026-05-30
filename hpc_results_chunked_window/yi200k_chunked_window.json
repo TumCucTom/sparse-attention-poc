@@ -1,0 +1,13 @@
+{
+  "model": "01-ai/Yi-34B-200K",
+  "attention_type": "chunked_sliding_window",
+  "seq_len": 200000,
+  "window_size": 512,
+  "memory_peak_gb": 78.05257749557495,
+  "avg_speed_tokens_per_sec": 14.011528788896735,
+  "times": [
+    2.2813034057617188,
+    2.2840254306793213,
+    2.2861719131469727
+  ]
+}
