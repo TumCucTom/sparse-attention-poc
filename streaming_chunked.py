@@ -135,7 +135,10 @@ class SimpleSlidingWindowAttention(nn.Module):
 def replace_and_test(model_name, seq_len, window_size, output_file):
     """Test sliding window attention at 200K context."""
     import os
-    os.environ['HF_TOKEN'] = os.environ.get('HF_TOKEN', '')
+    # Only set HF_TOKEN if it's not empty
+    hf_token = os.environ.get('HF_TOKEN', '')
+    if hf_token:
+        os.environ['HF_TOKEN'] = hf_token
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -144,7 +147,7 @@ def replace_and_test(model_name, seq_len, window_size, output_file):
 
     print(f"\nTesting {model_name} with window_size={window_size} at seq_len={seq_len}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, token=os.environ.get('HF_TOKEN'))
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, token=hf_token if hf_token else None)
     tokenizer.pad_token = tokenizer.eos_token
 
     # Create prompt
