@@ -237,7 +237,7 @@ class MiniMaxSparseAttention(nn.Module):
 
         out = self._sparse_attention(q, k, v, topk_blocks)
 
-        out = out.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, hidden_size)
+        out = out.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, self.num_heads * self.head_dim)
         out = self.o_proj(out)
         # Return 2 values to match what the model expects
         # (attn_output, attn_weights) - past_key_value not used in sparse mode
