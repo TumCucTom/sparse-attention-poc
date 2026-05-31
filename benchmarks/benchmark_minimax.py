@@ -63,7 +63,7 @@ from minimax_m3_sparse_attention import MiniMaxSparseAttention
 import types
 
 model_name = "MiniMaxAI/MiniMax-M2.7"
-seq_len = 8192  # 8K (sparse attention works here; 128K+ exceeds GPU memory)
+seq_len = 8192  # 8K - working config
 num_tokens = 32
 
 hf_token = os.environ.get('HF_TOKEN', '')
@@ -89,7 +89,7 @@ model = AutoModelForCausalLM.from_pretrained(
     model_name,
     config=config,
     torch_dtype=torch.float16,
-    device_map="balanced",
+    device_map="auto",
     trust_remote_code=True,
     token=token,
 )

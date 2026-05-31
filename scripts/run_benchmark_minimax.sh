@@ -3,6 +3,7 @@
 #SBATCH --output=logs/benchmark_minimax-%j.out
 #SBATCH --error=logs/benchmark_minimax-%j.err
 #SBATCH --time=06:00:00
+#SBATCH --nodes=1
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=256G

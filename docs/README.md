@@ -89,29 +89,36 @@ python benchmarks/benchmark_static.py
 | Model | MiniMax-M2.7 (456B MoE) |
 | GPUs | 4x GH200 120GB |
 | Context | 8K tokens |
-| Speed | 2.4 tok/s |
+| Speed | 2.3 tok/s |
 | Attention layers replaced | 62/62 |
 | Load time | ~90s |
 
 **What works:**
-- Model loads with `device_map="balanced"` across 4 GPUs
+- Model loads with `device_map="auto"` across 4 GPUs
 - All 62 attention layers successfully replaced with `MiniMaxSparseAttention`
-- Inference runs at8K context
+- Inference runs at 8K context
 
-**What doesn't work:**
-- 128K+ contexts: block scoring matrix (O(num_blocks × num_heads)) exceeds GPU memory
-- Dense attention also OOMs at 128K+ on this hardware
-- The sparse attention was supposed to enable longer contexts, but the block scoring itself grows too large
+**What doesn't work (tested extensively):**
+- 32K+: OOM even with chunked SDPA. Root cause: sparse attention requires full-sequence Q/K/V projections + index projections + block scores, exceeding available memory
+- 128K+ with 4 nodes (16 GPUs): All 62 layers replaced but inference still OOMs at the attention matmul
+- Chunked SDPA was implemented but GPU is still at 94-95GB utilization before chunking even starts
+
+**Key insight:** Sparse attention on MiniMax-M2.7 at these context lengths actually uses MORE memory than dense attention because:
+1. Extra index projections (MLP) on full sequence
+2. Block scores matrix (O(num_heads × num_blocks²))
+3. No Flash Attention optimization for sparse patterns
+4. Dense attention benefits from highly optimized Flash Attention
 
 **Compatibility fixes applied:**
 - `create_causal_mask` patch: strips `cache_position` kwarg for older transformers
 - `rope_type=None` patch: prevents crash in `modeling_rope_utils.py`
-- Per-layer device placement: avoids device mismatch with `device_map="balanced"`
+- Per-layer device placement: avoids device mismatch with `device_map="auto"`
 - Weight shape inference: reads `num_heads` from actual weight shapes (not config)
+- Chunked SDPA fallback: for sequences > 8192 tokens
 
 ## Limitations
 
-- **MiniMax-M2.7 at 128K+**: Sparse attention block scoring OOMs before dense would
+- **MiniMax-M2.7 at 32K+**: Sparse attention uses more memory than optimized dense attention
 - **Single GPU**: Too large even with sparse attention — needs 4 GPUs
 - **Large models (32B+)**: Diminishing returns from sparse attention (compute-bound)
 - **Learned vs Static**: Static wins at short contexts; learned may win at 1M+ tokens

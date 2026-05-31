@@ -179,25 +179,55 @@ class MiniMaxSparseAttention(nn.Module):
 
         # Use SDPA with explicit mask for potential Flash Attention optimization
         try:
-            # Flash Attention via SDPA with explicit causal mask
-            attn_mask = torch.zeros_like(causal_mask, dtype=torch.bool)
-            attn_mask = causal_mask  # True means "use this attention"
-
-            out = F.scaled_dot_product_attention(
-                q.to(torch.float32),
-                k_selected.to(torch.float32),
-                v_selected.to(torch.float32),
-                attn_mask=attn_mask,
-                dropout_p=0.0,
-                is_causal=False,
-                scale=self.scale
-            )
+            # SDPA path - but chunk for very large seq_len to avoid OOM
+            # SDPA with causal mask on [131K, 64] is still heavy
+            if seq_len > 8192:
+                # Chunked SDPA for large sequences
+                out_chunks = []
+                chunk_size = 2048
+                for start in range(0, seq_len, chunk_size):
+                    end = min(start + chunk_size, seq_len)
+                    q_chunk = q[:, :, start:end, :].float()
+                    k_chunk = k_selected[:, :, :actual_k * block_size, :].float()
+                    v_chunk = v_selected[:, :, :actual_k * block_size, :].float()
+                    causal_mask_chunk = causal_mask[:, :, start:end, :actual_k * block_size]
+                    attn_mask_chunk = ~causal_mask_chunk
+                    out_chunk = F.scaled_dot_product_attention(
+                        q_chunk, k_chunk, v_chunk,
+                        attn_mask=attn_mask_chunk,
+                        dropout_p=0.0,
+                        is_causal=False,
+                        scale=self.scale
+                    )
+                    out_chunks.append(out_chunk)
+                out = torch.cat(out_chunks, dim=2)
+            else:
+                # Normal SDPA for reasonable seq_lens
+                attn_mask = ~causal_mask  # True means "use this attention"
+                out = F.scaled_dot_product_attention(
+                    q.to(torch.float32),
+                    k_selected.to(torch.float32),
+                    v_selected.to(torch.float32),
+                    attn_mask=attn_mask,
+                    dropout_p=0.0,
+                    is_causal=False,
+                    scale=self.scale
+                )
         except Exception:
-            # Fallback to manual computation
-            scores = torch.matmul(q.float(), k_selected.float().transpose(-2, -1)) * self.scale
-            scores = scores.masked_fill(~causal_mask, -1e9)
-            attn = F.softmax(scores, dim=-1)
-            out = torch.matmul(attn, v_selected.float())
+            # Chunked computation to avoid OOM on large seq_lens
+            # Process query in chunks to avoid materializing full [seq_len, k*block] matmul
+            out_chunks = []
+            chunk_size = 2048
+            for start in range(0, seq_len, chunk_size):
+                end = min(start + chunk_size, seq_len)
+                q_chunk = q[:, :, start:end, :].float()  # [B, H, chunk, head_dim]
+                scores_chunk = torch.matmul(q_chunk, k_selected.float().transpose(-2, -1)) * self.scale
+                causal_mask_chunk = causal_mask[:, :, start:end, :]  # [B, H, chunk, k*block]
+                scores_chunk = scores_chunk.masked_fill(~causal_mask_chunk, -1e9)
+                attn_chunk = F.softmax(scores_chunk, dim=-1)
+                out_chunk = torch.matmul(attn_chunk, v_selected.float())  # [B, H, chunk, head_dim]
+                out_chunks.append(out_chunk)
+            out = torch.cat(out_chunks, dim=2)
 
         return out.to(dtype=q.dtype)
 
