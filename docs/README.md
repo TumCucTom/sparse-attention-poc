@@ -122,9 +122,3 @@ python benchmarks/benchmark_static.py
 - **Single GPU**: Too large even with sparse attention — needs 4 GPUs
 - **Large models (32B+)**: Diminishing returns from sparse attention (compute-bound)
 - **Learned vs Static**: Static wins at short contexts; learned may win at 1M+ tokens
-
-## References
-
-- [MiniMax M3 Paper](https://arxiv.org/abs/2501.12599) - Two-stage sparse attention
-- [StreamingLLM](https://arxiv.org/abs/2309.17453) - Sink tokens + local window
-- [SubQ](https://subq.ai) - Learned sparse routing
