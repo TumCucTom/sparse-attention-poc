@@ -182,20 +182,9 @@ python3 train_sparse.py \
 
 ---
 
-## References
-
-- [MiniMax M3](https://arxiv.org/abs/2412.12215) — Two-stage sparse attention
-- [SubQ](https://subq.ai) — Sparse subquery attention (learned routing)
-- [DeepSeek V4 CSA/HCA](https://digg.com/ai/78gnmbpg) — Compressed sparse attention
-- [FlashAttention](https://arxiv.org/abs/2205.14135) — IO-aware exact attention
-- [Longformer](https://arxiv.org/abs/2004.05150) — Local + global attention pattern
-- [StreamingLLM](https://arxiv.org/abs/2309.17453) — Sliding window with attention sinks
-
----
-
 ## GPU Hours Used
 
-Total: ~170 GPU-hours (budget was 200 hours)
+Total: ~170 GH200 hours
 
 ## Conclusions
 
