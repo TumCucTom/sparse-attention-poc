@@ -8,24 +8,21 @@
 
 Testing MiniMax-M2.7 (456B MoE) at very large contexts using HPC cluster.
 
-| Context | Nodes | GPUs | Dense | Sparse | Notes |
-|---------|-------|------|-------|--------|-------|
-| 128K | 16 | 64 | **1.3 tok/s** | OOM | Dense works, sparse fails |
-| 256K | 16 | 64 | OOM | - | Both fail at this scale |
+| Context | Nodes | GPUs | Dense | Notes |
+|---------|-------|------|-------|-------|
+| 128K | 16 | 64 | **1.4 tok/s** | Works! 90.3GB |
+| 256K | 64 | 256 | OOM | Still memory-bound |
 
 **Key findings:**
-1. MiniMax-M2.7 at 128K works with dense attention on 64 GPUs (90.3GB peak memory)
-2. Sparse attention's block_scores matrix (O(num_blocks² × num_heads)) is the bottleneck
-3. Even with 64 GPUs, sparse attention fails at 128K due to block_scores memory requirements
+1. MiniMax-M2.7 at 128K works with dense attention on 64 GPUs (1.4 tok/s, 90.3GB peak memory)
+2. Even 256 GPUs (64 nodes) cannot run 256K context - model is memory-bound
+3. Sparse attention's block_scores matrix (O(num_blocks² × num_heads)) is the bottleneck
+4. Streaming attention replacement fails because replacement requires allocating new modules before freeing old ones
 
 **Why sparse fails on MiniMax-M2.7:**
 - With block_size=512, 128K tokens = 256 blocks
 - block_scores = 48 heads × 256² = ~3M entries per head
 - With GQA (48 Q heads, 8 KV heads), this exceeds GPU memory
-
-**Next steps:**
-- Try streaming attention (no block_scores) with proper layer replacement
-- Try 32+ nodes (128+ GPUs) for 256K+ contexts
 
 ---
 
@@ -106,27 +103,27 @@ Memory: O(window_size) instead of O(num_blocks²)
 
 ---
 
-## GPU Hours Used
-
-Total: ~50 GPU-hours (budget was 200 hours)
-
-| Job ID | Context | Nodes | Result | GPU-hours |
-|--------|---------|-------|--------|-----------|
-| 4955729 | Sparse 128K | 16 | OOM | 2.6 |
-| 4955807 | Dense 128K | 16 | ✓ 1.3 tok/s | 16 |
-| 4956083 | Streaming 128K | 16 | ✓ (dense) | 15.7 |
-| 4956181 | Dense 256K | 16 | OOM | 16 |
-
----
-
 ## Limitations
 
-1. **MiniMax-M2.7 at 128K+**: Dense attention works on 64 GPUs but sparse attention's block_scores matrix exceeds memory. Streaming attention is the right approach but needs proper layer replacement.
+1. **MiniMax-M2.7 at 128K+**: Dense attention works on 64 GPUs but sparse attention's block_scores matrix exceeds memory. Streaming attention replacement fails because it requires allocating new modules before freeing old ones.
 
-2. **256K context**: Even 64 GPUs can't handle MiniMax-M2.7 at 256K with dense attention. Would need 128+ GPUs.
+2. **256K context**: Even 256 GPUs cannot handle MiniMax-M2.7 at 256K with dense attention. Would need model parallelism or CPU offloading strategies.
 
 3. **Model-specific attention patterns:** Results vary significantly by model architecture (GQA vs MHA, FFN/compute ratio, etc.)
 
 4. **Learned vs Static**: Static wins at short contexts; learned may win at 1M+ tokens
 
 5. **MiniMax-M2.7 MoE size:** 456B params needs 4+ GPUs for fp16 inference — offloading strategies required for larger models
+
+---
+
+## GPU Hours Used
+
+Total: ~170 GPU-hours (budget was 200 hours)
+
+## Conclusions
+
+1. **MiniMax-M2.7 at 128K works** with dense attention on 64 GPUs (1.4 tok/s)
+2. **256K context needs more memory** than 256 GPUs provide - would need CPU offloading or model parallelism improvements
+3. **Streaming attention replacement fails** because replacement requires allocating new modules before old ones are freed
+4. **For very large contexts**, would need to load model with streaming attention from the start, not replace after loading

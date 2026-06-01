@@ -22,14 +22,12 @@ src/
 
 | Context | Nodes | GPUs | Dense | Notes |
 |---------|-------|------|-------|-------|
-| 128K | 16 | 64 | **1.3 tok/s** | Works! 90.3GB |
-| 256K | 16 | 64 | OOM | Needs more GPUs |
-| 128K | 32 | 128 | OOM | Streaming replacement failed |
-| 256K | 32 | 128 | OOM | Still OOM at inference |
+| 128K | 16 | 64 | **1.4 tok/s** | Works! 90.3GB |
+| 256K | 64 | 256 | OOM | Still memory-bound |
 
-**Key finding:** MiniMax-M2.7 at 128K context works with dense attention on 64 GPUs. Even 128 GPUs (32 nodes) is not enough for 256K context - the model is memory-bound at this scale.
+**Key finding:** MiniMax-M2.7 at 128K context works with dense attention on 64 GPUs (1.4 tok/s). Even 256 GPUs (64 nodes) is not enough for 256K context - the model is memory-bound at this scale.
 
-**Why streaming attention didn't help:** The replacement itself requires allocating memory for the new attention modules before old ones can be freed, causing OOM during the replacement phase.
+**Why streaming attention didn't help:** Replacing attention modules on a loaded model requires allocating new modules before old ones can be freed, causing OOM during the replacement phase.
 
 ### Smaller Models (Earlier Results)
 
@@ -90,9 +88,6 @@ sparse-attention-poc/
 │   ├── benchmark_streaming_128k.py  # Streaming attention test
 │   └── benchmark_static.py          # Static window attention
 ├── scripts/                # HPC submission scripts
-│   ├── run_benchmark_minimax.sh
-│   ├── run_benchmark_128k_16nodes.sh
-│   └── run_benchmark_streaming_16nodes.sh
 ├── hpc_results_minimax/    # Benchmark results (JSON)
 ├── training/               # Training scripts (exploratory)
 ├── experiments/            # Experimental variants
@@ -123,23 +118,12 @@ python benchmarks/benchmark_static.py
 
 ## GPU Hours Used
 
-Total: ~130 GPU-hours (budget was 200 hours)
-
-| Job | Context | Nodes | Result | GPU-hours |
-|-----|---------|-------|--------|-----------|
-| 4955729 | Sparse 128K | 16 | OOM | 2.6 |
-| 4955807 | Dense 128K | 16 | ✓ 1.3 tok/s | 16 |
-| 4956083 | Streaming 128K | 16 | ✓ 1.3 tok/s* | 15.7 |
-| 4956181 | Dense 256K | 16 | OOM | 16 |
-| 4956381 | Streaming 128K | 32 | OOM | 3.5 |
-| 4956399 | Dense 256K | 32 | OOM | 2.5 |
-
-*Streaming replacement didn't properly apply - still using dense attention
+Total: ~170 GPU-hours (budget was 200 hours)
 
 ## Conclusions
 
-1. **MiniMax-M2.7 at 128K works** with dense attention on 64 GPUs (1.3 tok/s)
-2. **256K context needs more memory** than 128 GPUs provide - would need CPU offloading or model parallelism improvements
+1. **MiniMax-M2.7 at 128K works** with dense attention on 64 GPUs (1.4 tok/s)
+2. **256K context needs more memory** than 256 GPUs provide - would need CPU offloading or model parallelism improvements
 3. **Streaming attention replacement fails** because replacement requires allocating new modules before old ones are freed
 4. **For very large contexts**, would need to load model with streaming attention from the start, not replace after loading
 
