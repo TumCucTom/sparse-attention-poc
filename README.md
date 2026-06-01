@@ -35,7 +35,7 @@ Before touching any model, we benchmarked attention primitives in isolation on s
 
 ### 2. SubQ / SSA-Inspired Sparse Routing (Local, Qwen 0.5B)
 
-Tried learned sparse routing inspired by [SubQ](https://subq.ai) and [Sparsely-Activated Sparse Attention (SSA)](https://subq.ai):
+Tried learned sparse routing inspired by [SubQ](https://subq.ai) and SSA:
 
 - A trainable router picks which tokens to attend to
 - Implemented with various tricks: STE (straight-through estimator), gumbel-softmax, dense-teacher distillation
@@ -52,8 +52,8 @@ Studied the [MiniMax M3](https://arxiv.org/abs/2412.12215) approach and implemen
 **Stage 2 (Sparse):** Main Q attends only to KV in selected top-k blocks
 
 Key files:
-- `minimax_m3_sparse_attention.py` — Pure M3 two-stage
-- `minimax_m3_hybrid.py` — Hybrid local + global (combines sliding window with sparse global blocks)
+- `src/minimax_m3_sparse_attention.py` — Pure M3 two-stage
+- `src/minimax_m3_hybrid.py` — Hybrid local + global (sliding window + sparse global blocks)
 
 **Local results (Qwen 0.5B, MPS):**
 
@@ -86,8 +86,8 @@ Inspired by [DeepSeek's Compressed Sparse Attention](https://digg.com/ai/78gnmbp
 ### 5. Training Pipeline (Local)
 
 Built a training pipeline using Gumbel-Softmax for differentiable block selection:
-- `gumbel_sparse_attention.py` — Gumbel-Softmax based trainable sparse attention
-- `trainable_sparse_attention.py` — Earlier attempt with custom router
+- `src/gumbel_sparse_attention.py` — Gumbel-Softmax based trainable sparse attention
+- `src/trainable_sparse_attention.py` — Earlier attempt with custom router
 - `train_sparse.py` — Full training script with checkpointing, LR scheduling
 - `train_sparse.sh` — SLURM script for HPC
 
@@ -140,7 +140,7 @@ sparse-attention-poc/
 ├── train_sparse.py                   # Training script
 ├── train_sparse.sh                   # SLURM training script
 └── docs/
-    ├── README.md                     # This file
+    ├── README.md                     # Detailed docs
     ├── HPC_TESTING_GUIDE.md          # HPC testing guide
     └── BENCHMARK_RESULTS.md          # Detailed results
 ```
@@ -151,7 +151,7 @@ sparse-attention-poc/
 
 ### Local benchmark (Qwen 0.5B on M5 Mac)
 ```bash
-python minimax_m3_sparse_attention.py
+python src/minimax_m3_sparse_attention.py
 python deepseek_v4_csa.py
 ```
 
