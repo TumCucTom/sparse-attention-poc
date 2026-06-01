@@ -126,9 +126,3 @@ Total: ~170 GPU-hours (budget was 200 hours)
 2. **256K context needs more memory** than 256 GPUs provide - would need CPU offloading or model parallelism improvements
 3. **Streaming attention replacement fails** because replacement requires allocating new modules before old ones are freed
 4. **For very large contexts**, would need to load model with streaming attention from the start, not replace after loading
-
-## References
-
-- [MiniMax M3 Paper](https://arxiv.org/abs/2501.12599) - Two-stage sparse attention
-- [StreamingLLM](https://arxiv.org/abs/2309.17453) - Sink tokens + local window
-- [SubQ](https://subq.ai) - Learned sparse routing
