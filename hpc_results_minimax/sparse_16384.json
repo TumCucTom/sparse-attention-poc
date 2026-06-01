@@ -1,0 +1,14 @@
+{
+  "model": "MiniMaxAI/MiniMax-M2.7",
+  "attention_type": "sparse",
+  "seq_len": 16384,
+  "input_tokens": 5463,
+  "num_tokens": 32,
+  "memory_peak_gb": 85.3700385093689,
+  "avg_speed_tokens_per_sec": 2.6185925874274916,
+  "times": [
+    12.532605171203613,
+    12.059109210968018,
+    12.06920051574707
+  ]
+}

@@ -1,10 +1,35 @@
 # Sparse Attention Benchmark Results
 
-**Hardware:** NVIDIA GH200 120GB GPU | **Date:** May 2026
+**Hardware:** NVIDIA GH200 120GB GPU Cluster | **Date:** June 2026
 
 ---
 
-## Key Findings
+## MiniMax-M2.7 Large Context Results (June 2026)
+
+Testing MiniMax-M2.7 (456B MoE) at very large contexts using HPC cluster.
+
+| Context | Nodes | GPUs | Dense | Sparse | Notes |
+|---------|-------|------|-------|--------|-------|
+| 128K | 16 | 64 | **1.3 tok/s** | OOM | Dense works, sparse fails |
+| 256K | 16 | 64 | OOM | - | Both fail at this scale |
+
+**Key findings:**
+1. MiniMax-M2.7 at 128K works with dense attention on 64 GPUs (90.3GB peak memory)
+2. Sparse attention's block_scores matrix (O(num_blocks² × num_heads)) is the bottleneck
+3. Even with 64 GPUs, sparse attention fails at 128K due to block_scores memory requirements
+
+**Why sparse fails on MiniMax-M2.7:**
+- With block_size=512, 128K tokens = 256 blocks
+- block_scores = 48 heads × 256² = ~3M entries per head
+- With GQA (48 Q heads, 8 KV heads), this exceeds GPU memory
+
+**Next steps:**
+- Try streaming attention (no block_scores) with proper layer replacement
+- Try 32+ nodes (128+ GPUs) for 256K+ contexts
+
+---
+
+## Key Findings (Earlier Results)
 
 ### 1. Sparse Attention shines at very long contexts (200K+ tokens)
 
@@ -55,7 +80,7 @@ Large models spend proportionally less time on attention vs compute-heavy FFN la
 
 ## MiniMax M3-Style Sparse Attention
 
-Implementation: [minimax_m3_sparse_attention.py](minimax_m3_sparse_attention.py)
+Implementation: [minimax_m3_sparse_attention.py](../src/minimax_m3_sparse_attention.py)
 
 Two-stage approach:
 1. **Index attention:** Small MLP (hidden_dim → index_dim) computes block importance scores
@@ -68,27 +93,40 @@ Key parameters:
 
 ---
 
-## Limitations
+## StreamingLLM-Style Alternative
 
-1. **MiniMax-M2.7 inference at 8K context:** Successfully replaced 62 attention layers and ran inference at 8K context (2.4 tok/s).128K+ exceeds GPU memory during sparse attention computation (block scores matrix grows as O(num_blocks × num_heads)).
+Implementation: [streaming_llm_sparse.py](../src/streaming_llm_sparse.py)
 
-2. **Model-specific attention patterns:** Results vary significantly by model architecture (GQA vs MHA, FFN/compute ratio, etc.)
+This approach avoids the block_scores matrix entirely by using:
+- **Sink tokens**: Last 4 tokens (always attended)
+- **Sliding window**: Last N tokens (configurable, default 32)
+- No block importance scoring needed
 
-3. **Learned selection overhead:** Index projection MLP adds per-token compute that eats into sparse attention gains, especially at shorter seq_lens where static window wins.
-
-4. **MiniMax-M2.7 MoE size:** 456B params needs 4+ GPUs for fp16 inference — offloading strategies required for larger models
+Memory: O(window_size) instead of O(num_blocks²)
 
 ---
 
-## Conclusions
+## GPU Hours Used
 
-1. **Sparse attention is most valuable for memory-constrained long-context inference** (200K+ tokens on single GPU) — up to 4.6x speedup over dense
+Total: ~50 GPU-hours (budget was 200 hours)
 
-2. **For 128K context on 14B-class models, use static window attention** (12.0 tok/s) instead of learned sparse (9.5 tok/s) — it's simpler and faster
+| Job ID | Context | Nodes | Result | GPU-hours |
+|--------|---------|-------|--------|-----------|
+| 4955729 | Sparse 128K | 16 | OOM | 2.6 |
+| 4955807 | Dense 128K | 16 | ✓ 1.3 tok/s | 16 |
+| 4956083 | Streaming 128K | 16 | ✓ (dense) | 15.7 |
+| 4956181 | Dense 256K | 16 | OOM | 16 |
 
-3. **MiniMax-M2.7 (456B MoE) inference working at 8K** — successfully replaced 62 attention layers with sparse attention, achieved 2.4 tok/s at 8K context on 4xGH200. Memory constraints prevent 128K+ testing with sparse attention.
+---
 
-4. **For production at scale, the sparse approach matters most** for:
-   - Single-GPU serving of 200K+ token contexts
-   - Memory-constrained environments
-   - Scenarios where quality loss from block-level selection is acceptable
+## Limitations
+
+1. **MiniMax-M2.7 at 128K+**: Dense attention works on 64 GPUs but sparse attention's block_scores matrix exceeds memory. Streaming attention is the right approach but needs proper layer replacement.
+
+2. **256K context**: Even 64 GPUs can't handle MiniMax-M2.7 at 256K with dense attention. Would need 128+ GPUs.
+
+3. **Model-specific attention patterns:** Results vary significantly by model architecture (GQA vs MHA, FFN/compute ratio, etc.)
+
+4. **Learned vs Static**: Static wins at short contexts; learned may win at 1M+ tokens
+
+5. **MiniMax-M2.7 MoE size:** 456B params needs 4+ GPUs for fp16 inference — offloading strategies required for larger models

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository contains experiments with sparse attention mechanisms for LLMs with 200K-1M token context windows. Implements MiniMax M3-style two-stage sparse attention with learned block selection.
+This repository contains experiments with sparse attention mechanisms for LLMs with 128K-1M token context windows. Implements MiniMax M3-style two-stage sparse attention with learned block selection, plus StreamingLLM-style alternatives.
 
 ## Architecture
 
@@ -12,10 +12,22 @@ src/
 ├── minimax_m3_static.py             # Static window attention (no learning)
 ├── minimax_m3_exact.py              # Exact attention for comparison
 ├── minimax_m3_hybrid.py             # Hybrid attention variants
-└── streaming_*.py                   # StreamingLLM variants
+├── streaming_llm_sparse.py          # StreamingLLM-style (no block_scores)
+└── streaming_*.py                   # Other StreamingLLM variants
 ```
 
-## Key Results (GH200 120GB GPU)
+## Key Results
+
+### MiniMax-M2.7 (456B MoE) Results (June 2026)
+
+| Context | Nodes | GPUs | Dense | Notes |
+|---------|-------|------|-------|-------|
+| 128K | 16 | 64 | **1.3 tok/s** | Works! 90.3GB |
+| 256K | 16 | 64 | OOM | Needs more GPUs |
+
+**Key finding:** MiniMax-M2.7 at 128K context works with dense attention on 64 GPUs. Sparse attention with block_scores matrix fails at 128K because O(num_blocks² × num_heads) exceeds memory.
+
+### Smaller Models (Earlier Results)
 
 | Model | Context | Sparse | Dense | Speedup | Memory |
 |-------|---------|--------|-------|---------|--------|
@@ -26,6 +38,18 @@ src/
 | **Static window** | 128K | **12.0 tok/s** | 5.2 tok/s | **2.3x** | 38.2 GB |
 
 **Key insight**: Static window attention (last 128 tokens) outperforms learned sparse at shorter contexts due to zero overhead.
+
+## Why Sparse Attention Fails on MiniMax-M2.7 at 128K
+
+The block_scores matrix computation is the bottleneck:
+
+```
+num_blocks = seq_len / block_size = 131072 / 512 = 256 blocks
+block_scores = num_heads × num_blocks² = 48 × 256² ≈ 3M entries per head
+With GQA (8x KV replication): O(num_heads × num_blocks²) becomes memory-prohibitive
+```
+
+**Solution approach:** StreamingLLM-style attention that avoids the block_scores matrix entirely.
 
 ## Sparse Attention Mechanism
 
@@ -51,14 +75,16 @@ attn = MiniMaxSparseAttention(
 ```
 sparse-attention-poc/
 ├── src/                    # Core sparse attention implementations
-├── benchmarks/              # Benchmark scripts
-│   ├── benchmark_minimax.py      # MiniMax-M2.7 with sparse attention
-│   ├── benchmark_static.py       # Static window attention
-│   └── ...
+├── benchmarks/             # Benchmark scripts
+│   ├── benchmark_minimax.py         # MiniMax-M2.7 benchmarks
+│   ├── benchmark_minimax_very_long.py  # 128K-256K benchmarks
+│   ├── benchmark_streaming_128k.py  # Streaming attention test
+│   └── benchmark_static.py          # Static window attention
 ├── scripts/                # HPC submission scripts
 │   ├── run_benchmark_minimax.sh
-│   └── ...
-├── results/                # Benchmark results (JSON)
+│   ├── run_benchmark_128k_16nodes.sh
+│   └── run_benchmark_streaming_16nodes.sh
+├── hpc_results_minimax/    # Benchmark results (JSON)
 ├── training/               # Training scripts (exploratory)
 ├── experiments/            # Experimental variants
 └── docs/
@@ -68,10 +94,16 @@ sparse-attention-poc/
 
 ## Usage
 
-### HPC Benchmark
+### HPC Benchmark (MiniMax-M2.7 at 128K)
 ```bash
 cd scripts
-sbatch run_benchmark_minimax.sh
+sbatch run_benchmark_128k_16nodes.sh
+```
+
+### HPC Benchmark (Streaming Attention)
+```bash
+cd scripts
+sbatch run_benchmark_streaming_16nodes.sh
 ```
 
 ### Local Test
@@ -80,45 +112,21 @@ source venv/bin/activate
 python benchmarks/benchmark_static.py
 ```
 
-## MiniMax-M2.7 Status
+## GPU Hours Used
 
-**Working:** Sparse attention inference at 8K context on 4xGH200 GPUs.
+Total: ~50 GPU-hours (budget was 200 hours)
 
-| Metric | Value |
-|--------|-------|
-| Model | MiniMax-M2.7 (456B MoE) |
-| GPUs | 4x GH200 120GB |
-| Context | 8K tokens |
-| Speed | 2.3 tok/s |
-| Attention layers replaced | 62/62 |
-| Load time | ~90s |
+| Job | Context | Nodes | Result | GPU-hours |
+|-----|---------|-------|--------|-----------|
+| 4955729 | Sparse 128K | 16 | OOM | 2.6 |
+| 4955807 | Dense 128K | 16 | ✓ 1.3 tok/s | 16 |
+| 4956083 | Streaming 128K | 16 | ✓ 1.3 tok/s* | 15.7 |
+| 4956181 | Dense 256K | 16 | OOM | 16 |
 
-**What works:**
-- Model loads with `device_map="auto"` across 4 GPUs
-- All 62 attention layers successfully replaced with `MiniMaxSparseAttention`
-- Inference runs at 8K context
+*Streaming replacement didn't properly apply - still using dense attention
 
-**What doesn't work (tested extensively):**
-- 32K+: OOM even with chunked SDPA. Root cause: sparse attention requires full-sequence Q/K/V projections + index projections + block scores, exceeding available memory
-- 128K+ with 4 nodes (16 GPUs): All 62 layers replaced but inference still OOMs at the attention matmul
-- Chunked SDPA was implemented but GPU is still at 94-95GB utilization before chunking even starts
+## References
 
-**Key insight:** Sparse attention on MiniMax-M2.7 at these context lengths actually uses MORE memory than dense attention because:
-1. Extra index projections (MLP) on full sequence
-2. Block scores matrix (O(num_heads × num_blocks²))
-3. No Flash Attention optimization for sparse patterns
-4. Dense attention benefits from highly optimized Flash Attention
-
-**Compatibility fixes applied:**
-- `create_causal_mask` patch: strips `cache_position` kwarg for older transformers
-- `rope_type=None` patch: prevents crash in `modeling_rope_utils.py`
-- Per-layer device placement: avoids device mismatch with `device_map="auto"`
-- Weight shape inference: reads `num_heads` from actual weight shapes (not config)
-- Chunked SDPA fallback: for sequences > 8192 tokens
-
-## Limitations
-
-- **MiniMax-M2.7 at 32K+**: Sparse attention uses more memory than optimized dense attention
-- **Single GPU**: Too large even with sparse attention — needs 4 GPUs
-- **Large models (32B+)**: Diminishing returns from sparse attention (compute-bound)
-- **Learned vs Static**: Static wins at short contexts; learned may win at 1M+ tokens
+- [MiniMax M3 Paper](https://arxiv.org/abs/2501.12599) - Two-stage sparse attention
+- [StreamingLLM](https://arxiv.org/abs/2309.17453) - Sink tokens + local window
+- [SubQ](https://subq.ai) - Learned sparse routing

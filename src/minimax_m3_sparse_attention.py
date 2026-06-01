@@ -58,7 +58,8 @@ class MiniMaxSparseAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=False)
         self.o_proj = nn.Linear(num_heads * head_dim, hidden_size, bias=False)
 
-        # Index projections for routing (lower dimension)
+        # Index projections for routing - use SMALL dimension to save memory
+        # These are additional but much smaller than main projections
         self.index_q = nn.Linear(hidden_size, num_heads * index_dim, bias=False)
         self.index_k = nn.Linear(hidden_size, num_kv_heads * index_dim, bias=False)
 
@@ -258,7 +259,7 @@ class MiniMaxSparseAttention(nn.Module):
         actual_k = min(self.top_k_blocks, block_scores.shape[-1])
         _, topk_blocks = block_scores.topk(actual_k, dim=-1)
         # topk_blocks is [batch, num_heads, num_blocks, top_k] - use first key block dimension
-        topk_blocks = topk_blocks[:, :, 0, :]  # [batch, num_heads, top_k] - Use first kv block's selection
+        topk_blocks = topk_blocks[:, :, 0, :]  # [batch, num_heads, top_k]
 
         # Stage 2: Main attention on selected blocks
         q = self.q_proj(x_f16).view(batch_size, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
@@ -270,7 +271,6 @@ class MiniMaxSparseAttention(nn.Module):
         out = out.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, self.num_heads * self.head_dim)
         out = self.o_proj(out)
         # Return 2 values to match what the model expects
-        # (attn_output, attn_weights) - past_key_value not used in sparse mode
         return out.to(dtype=hidden_states.dtype), None
 
 

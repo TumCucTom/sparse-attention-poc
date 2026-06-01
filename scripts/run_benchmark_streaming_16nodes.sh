@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=minimax-sparse-128k
-#SBATCH --output=logs/benchmark_minimax-%j.out
-#SBATCH --error=logs/benchmark_minimax-%j.err
-#SBATCH --time=03:00:00
-#SBATCH --nodes=8
+#SBATCH --job-name=minimax-streaming-128k
+#SBATCH --output=logs/benchmark_streaming_%j.out
+#SBATCH --error=logs/benchmark_streaming_%j.err
+#SBATCH --time=01:00:00
+#SBATCH --nodes=16
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=256G
@@ -13,7 +13,8 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
 
 echo "=========================================="
-echo "MiniMax-M2.7 with Sparse Attention at 128K"
+echo "MiniMax-M2.7 STREAMING Attention at 128K"
+echo "Using 16 nodes (64 GPUs)"
 echo "=========================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Start time: $(date)"
@@ -26,12 +27,15 @@ if [ -n "${HF_TOKEN:-}" ]; then
     export HF_TOKEN
 fi
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-nvidia-smi --query-gpu=name,memory.total --format=csv
+
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
 
 echo ""
-echo "=== Running MiniMax-M2.7 Sparse Benchmark ==="
+echo "=== Running MiniMax-M2.7 STREAMING (no block_scores) at 128K ==="
 
-PYTHONPATH="${SLURM_SUBMIT_DIR}/src:${PYTHONPATH:-}" $PYTHON benchmarks/benchmark_minimax.py 2>&1
+CONTEXT_SIZE=131072 ATTN_TYPE=streaming NUM_TOKENS=32 \
+PYTHONPATH="${SLURM_SUBMIT_DIR}/src:${PYTHONPATH:-}" \
+$PYTHON benchmarks/benchmark_streaming_128k.py 2>&1
 
 echo ""
 echo "Job completed: $(date)"
